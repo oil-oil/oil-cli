@@ -1,0 +1,26 @@
+{
+  "name": "oil-cli",
+  "version": "0.1.0",
+  "description": "安装、更新和管理 oiloil 商店里的 Skill",
+  "type": "module",
+  "bin": {
+    "oil": "bin/oil.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oil-oil/oil-cli.git"
+  },
+  "license": "MIT"
+}
