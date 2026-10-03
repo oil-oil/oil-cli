@@ -164,7 +164,8 @@ export function targetRoot(value) {
 }
 
 export async function scan(names, roots = discoveryRoots()) {
-  const found = [];
+  // 同一目录可能经由不同路径（符号链接、/var 与 /private/var）被扫到两次，只保留一份。
+  const found = [], seen = new Set();
   for (const root of [...new Set(roots)]) {
     let entries;
     try { entries = await readdir(root, { withFileTypes: true }); }
@@ -175,7 +176,7 @@ export async function scan(names, roots = discoveryRoots()) {
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       const skill = await inspectSkill(path.join(root, entry.name), names);
-      if (skill) found.push(skill);
+      if (skill && !seen.has(skill.real_path)) { seen.add(skill.real_path); found.push(skill); }
     }
   }
   return found;

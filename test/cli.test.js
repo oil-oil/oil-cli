@@ -527,3 +527,13 @@ test('免费 list/install/update 不依赖账号配置；令牌登录可修复�
   assert(!result.stdout.includes(TOKEN));
   assert(f.state.requests.filter((r) => r.path.startsWith('/api/store/download/')).every((r) => r.token === undefined));
 });
+
+test('同一安装经由两个路径（符号链接）被扫到时，status 只列一次', async (t) => {
+  const f = await fixture(t);
+  const root = path.join(f.home, '.claude', 'skills');
+  await writeSkill(root, 'oil-ui', '0.10.0');
+  await mkdir(path.join(f.cwd, '.claude'), { recursive: true });
+  await symlink(root, path.join(f.cwd, '.claude', 'skills'));
+  const value = data(await f.run(['status', '--json']));
+  assert.equal(value.installations.length, 1);
+});
