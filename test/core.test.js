@@ -157,6 +157,9 @@ test('配置位置遵守 XDG、HOME 和 Windows APPDATA；浏览器调用平台�
     } else assert.deepEqual(called[1], ['https://example.com/pay?a=1&b=2']);
   }
   assert.equal(await openBrowser('https://example.com', 'linux', async () => { throw new Error(); }), false);
+  let browserTimeout;
+  await openBrowser('https://example.com', 'linux', async (command, args, options) => { browserTimeout = options.timeout; }, 1000);
+  assert.equal(browserTimeout, 1000);
   await assert.rejects(openBrowser('file:///tmp/a'), { error: 'invalid_response' });
 });
 

@@ -331,7 +331,7 @@ test('登录轮询遇到服务端 5xx 继续等待，不中断', async (t) => {
   assert.equal(f.state.devicePolls, 4);
 });
 
-test('拒绝、设备码失效和 10 分钟超时不覆盖旧配置；服务端过期时间优先且不再轮询', async (t) => {
+test('新设备码拒绝或过期保留旧令牌；交互终端等满 10 分钟，服务端到期时间优先', async (t) => {
   const f = await fixture(t);
   await f.run(['login', '--token', TOKEN]);
   const before = await readFile(f.configFile, 'utf8');
@@ -345,13 +345,18 @@ test('拒绝、设备码失效和 10 分钟超时不覆盖旧配置；服务端�
   f.state.deviceStatuses = ['authorization_pending'];
   f.state.expiresIn = 3600;
   f.state.interval = 120;
-  let result = await f.run(['login', '--json']);
-  assert.equal(result.code, 1);
+  let result = await f.run(['login', '--json'], {}, { terminal: true });
+  assert.equal(result.code, 3);
   assert.deepEqual(result.trace.delays, [120000, 120000, 120000, 120000, 120000]);
   assert.equal(f.state.devicePolls, 4);
+  const pending = JSON.parse(await readFile(f.configFile, 'utf8'));
+  assert.equal(pending.token, TOKEN);
+  assert.equal(pending.pending_device.expires_at, 3600000);
+  await f.run(['login', '--token', TOKEN]);
   f.state.expiresIn = 12;
   f.state.interval = 5;
-  result = await f.run(['login', '--json']);
+  result = await f.run(['login', '--json'], {}, { terminal: true });
+  assert.equal(result.code, 1);
   assert.deepEqual(result.trace.delays, [5000, 5000, 2000]);
   assert.equal(f.state.devicePolls, 2);
   assert.deepEqual(await readFile(f.configFile, 'utf8'), before);

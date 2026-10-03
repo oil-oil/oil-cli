@@ -295,8 +295,12 @@ export async function run(argv, runtime = {}) {
       const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
       output.write({ version }, [`oil ${version}`]); return 0;
     }
-    const ctx = { options, output, token: null, interactive: runtime.interactive ?? canPrompt(options.json), signal: controller.signal,
-      client: new Client(controller.signal), sleep: runtime.sleep || delay, now: runtime.now || Date.now, openBrowser: runtime.openBrowser || openBrowser, confirm: runtime.confirm || confirm, ask: runtime.ask || ask };
+    const quote = (value) => /^[A-Za-z0-9_./:@=+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
+    const ctx = { options, output, token: null, interactive: runtime.interactive ?? canPrompt(options.json),
+      terminal: runtime.terminal ?? Boolean(process.stdin.isTTY && process.stdout.isTTY),
+      nextCommand: ['npx', 'github:oil-oil/oil-cli', ...argv].map(quote).join(' '), signal: controller.signal,
+      client: new Client(controller.signal), sleep: runtime.sleep || delay, now: runtime.now || Date.now,
+      openBrowser: runtime.openBrowser || ((url, timeoutMs) => openBrowser(url, undefined, undefined, timeoutMs)), confirm: runtime.confirm || confirm, ask: runtime.ask || ask };
     if (options.command === 'logout') return await logout(ctx);
     if (options.command === 'login') return await login(ctx, options.token);
     // 账号配置只在 status 或确实需要登录时读取。

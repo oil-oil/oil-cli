@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { confirm } from '../src/io.js';
 
 const options = JSON.parse(process.env.OIL_TEST_RUNTIME || '{}');
-let time = 0;
+let time = options.startTime ?? 0;
 const trace = { delays: [], questions: [] };
 const answers = [...(options.answers || [])];
 const questioner = async (question) => {
@@ -12,9 +12,14 @@ const questioner = async (question) => {
   return answer === true ? 'yes' : answer === false ? 'no' : String(answer ?? '');
 };
 process.exitCode = await run(process.argv.slice(2), {
-  terminal: options.terminal ?? false,
+  terminal: options.terminal ?? options.interactive ?? false,
   interactive: options.interactive ?? false,
   now: () => time,
+  openBrowser: options.browserDelay === undefined ? undefined : async (url, timeoutMs) => {
+    (trace.browserTimeouts ??= []).push(timeoutMs);
+    time += Math.min(options.browserDelay, timeoutMs);
+    return false;
+  },
   sleep: async (ms, unused, { signal }) => { if (signal.aborted) throw new Error('aborted'); trace.delays.push(ms); time += ms; },
   confirm: (question, yes, interactive, signal, defaultYes) => confirm(question, yes, interactive, signal, defaultYes, questioner),
   ask: questioner,

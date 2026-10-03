@@ -53,7 +53,7 @@ export async function fixture(t) {
     for (const version of ['0.10.0', '0.11.0']) releases[`${name}:${version}`] = await release(temporary, name, version);
   }
   const state = { catalog: structuredClone(CATALOG), latest: '0.10.0', badChecksum: false, missingChecksum: false, proBadChecksum: false, paidMissingChecksum: false,
-    deviceStatuses: ['authorization_pending', 'success'], devicePolls: 0, interval: 5, expiresIn: 600, deviceApproved: false, requireApproval: false,
+    deviceStatuses: ['authorization_pending', 'success'], devicePolls: 0, deviceRequests: 0, interval: 5, expiresIn: 600, deviceApproved: false, requireApproval: false,
     checkoutPolls: 0, checkoutActiveAfter: 2, checkoutAlreadyActive: false, logoutFailure: false, requests: [], revoked: new Set(), grants: new Map() };
   let base;
   const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
@@ -107,21 +107,26 @@ export async function fixture(t) {
         return res.end(archive.body);
       }
       if (req.method === 'POST' && url.pathname === '/api/cli/device') {
+        state.deviceRequests++;
         state.devicePolls = 0;
         state.deviceApproved = false;
-        return json(res, 200, { device_code: 'device_secret_0123456789', user_code: 'KDQW-7RTF', verification_uri: `${base}/device/`, verification_uri_complete: `${base}/device/?code=KDQW-7RTF`, expires_in: state.expiresIn, interval: state.interval });
+        const suffix = state.deviceRequests === 1 ? '' : `_${state.deviceRequests}`;
+        state.deviceCode = `device_secret_0123456789${suffix}`;
+        state.userCode = `KDQW-7RTF${suffix}`;
+        return json(res, 200, { device_code: state.deviceCode, user_code: state.userCode, verification_uri: `${base}/device/`, verification_uri_complete: `${base}/device/?code=${state.userCode}`, expires_in: state.expiresIn, interval: state.interval });
       }
       if (req.method === 'POST' && url.pathname === '/api/cli/device/approve') {
-        if (req.headers.cookie !== 'oil_session=fake' || body.user_code !== 'KDQW-7RTF') return error(res, 403, 'forbidden', '确认失败。');
+        if (req.headers.cookie !== 'oil_session=fake' || body.user_code !== state.userCode) return error(res, 403, 'forbidden', '确认失败。');
         state.deviceApproved = body.approve;
         return json(res, 200, { ok: true });
       }
       if (req.method === 'POST' && url.pathname === '/api/cli/token') {
-        if (body.device_code !== 'device_secret_0123456789') return error(res, 400, 'expired_token', '设备码不存在。');
-        const status = state.requireApproval ? state.deviceApproved ? 'success' : 'authorization_pending' : state.deviceStatuses[Math.min(state.devicePolls, state.deviceStatuses.length - 1)];
+        if (body.device_code !== state.deviceCode) return error(res, 400, 'expired_token', '设备码不存在。');
+        const statuses = state.deviceStatusesByRequest?.[state.deviceRequests - 1] ?? state.deviceStatuses;
+        const status = state.requireApproval ? state.deviceApproved ? 'success' : 'authorization_pending' : statuses[Math.min(state.devicePolls, statuses.length - 1)];
         state.devicePolls++;
         if (status === 'upstream') return error(res, 502, 'upstream', '服务连接失败');
-        if (status !== 'success') return error(res, 400, status, status);
+        if (status !== 'success') return error(res, 400, status, state.deviceErrorMessage ?? status);
         return json(res, 200, { token: TOKEN, email: EMAIL });
       }
       if (req.method === 'GET' && url.pathname === '/api/auth/me') {
@@ -161,7 +166,10 @@ export async function fixture(t) {
     const traceFile = path.join(temporary, `trace-${runNumber++}.json`);
     const child = spawn(process.execPath, [runtime.real ? CLI : DRIVER, ...args], { cwd, env: { ...env, ...extraEnv, OIL_TEST_RUNTIME: JSON.stringify(runtime), OIL_TEST_TRACE: traceFile }, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      if (runtime.killOnDevice && (stdout.includes('设备代码：') || stdout.includes('"event":"device"'))) child.kill('SIGKILL');
+    });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.stdin.end();
     const timer = setTimeout(() => child.kill('SIGKILL'), 25_000);

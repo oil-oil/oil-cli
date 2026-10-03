@@ -14,6 +14,8 @@ oiloil 商店的命令行工具：安装和更新 Oil UI 这类 Skill，付费�
 
 oil 会把 Skill 装进本机检测到的 Agent 目录：`~/.claude/skills`、`~/.codex/skills`、`~/.cursor/skills`，以及已经存在的 `~/.agents/skills`。付费 Skill 第一次安装时会打开浏览器，登录订阅用的 oiloil 账号，核对终端里显示的代码后点“允许”，安装会自动继续。
 
+Agent 运行时如果提示去浏览器允许，点完后让 Agent 再运行一次同样的命令。
+
 ## 常用命令
 
 下面的 `oil` 都可以换成 `npx github:oil-oil/oil-cli`。

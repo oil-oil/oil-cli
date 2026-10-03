@@ -15,13 +15,19 @@ export class Output {
     this.json = json;
     this.command = command;
     this.secrets = new Set(secrets.filter(Boolean));
+    this.hiddenSecrets = new Set();
   }
-  remember(value) { if (value) this.secrets.add(value); }
+  remember(value, { hide = false } = {}) {
+    if (value) {
+      this.secrets.add(value);
+      if (hide) this.hiddenSecrets.add(value);
+    }
+  }
   redact(value) {
     let result = value;
     for (const secret of [...this.secrets].sort((a, b) => b.length - a.length)) {
       for (const form of new Set([secret, encodeURIComponent(secret)])) {
-        result = result.replaceAll(form, `${secret.slice(0, 8)}…`);
+        result = result.replaceAll(form, this.hiddenSecrets.has(secret) ? '[已隐藏]' : `${secret.slice(0, 8)}…`);
       }
     }
     return result.replace(/oil_[A-Za-z0-9]+…?/g, (token) => `${token.slice(0, 8).replace(/…$/, '')}…`);
