@@ -1,3 +1,5 @@
+中文 · [English](README.en.md)
+
 # oil
 
 oiloil 的命令行工具，用来安装、更新和管理 oiloil 的 Skill。
