@@ -2,7 +2,8 @@ import { createServer } from 'node:http';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, lstat, readlink, symlink, link, copyFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, lstat, readlink, symlink, link, copyFile, realpath } from 'node:fs/promises';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +25,19 @@ export const readDirectoryLink = async (directory) => {
 };
 export async function pack(file, source, names) {
   const tar = tarInvocation(file, source);
-  await exec(tar.command, ['-czf', path.basename(file), '-C', source, ...names], { cwd: tar.cwd, env: { ...process.env, COPYFILE_DISABLE: '1' } });
+  await exec(tar.command, ['-czf', path.basename(file), '-C', source, ...names], { cwd: tar.cwd, timeout: 30_000, env: { ...process.env, COPYFILE_DISABLE: '1' } });
+}
+// 直接编码恶意链接条目，不能让 Windows tar 跟随 junction 打包它的祖先。
+export async function prependArchiveLink(file, name, target) {
+  const header = Buffer.alloc(512);
+  header.write(name, 0, 100);
+  for (const [offset, length, value] of [[100, 8, 0o777], [108, 8, 0], [116, 8, 0], [124, 12, 0], [136, 12, 0]]) header.write(value.toString(8).padStart(length - 1, '0') + '\0', offset, length);
+  header.fill(32, 148, 156);
+  header.write('2', 156, 1);
+  header.write(target, 157, 100);
+  header.write('ustar\0', 257);
+  header.write(header.reduce((sum, value) => sum + value, 0).toString(8).padStart(6, '0') + '\0 ', 148, 8);
+  await writeFile(file, gzipSync(Buffer.concat([header, gunzipSync(await readFile(file))])));
 }
 export const CATALOG = [
   { id: 'oil-ui', name: 'Oil UI Pro', summary: '帮你做好界面。', features: [], free: { skill: 'oil-ui' }, paid: { skill: 'oil-ui-pro' }, offer: ['lifetime'], prices: { lifetime: { amount: 6900, currency: 'cny', interval: null } }, page: '/pro/' },
@@ -48,20 +61,30 @@ export async function release(directory, name, version) {
   return { body, sha256: createHash('sha256').update(body).digest('hex'), file, source };
 }
 
+const browserScript = `(async () => {\nif (process.env.OIL_TEST_BROWSER !== 'approve') process.exit(1);\nconst url = new URL(process.env.OIL_BROWSER_URL || process.argv.at(-1));\nif (url.pathname.endsWith('/device/')) {\nconst response = await fetch(new URL('/api/cli/device/approve', url), {method: 'POST', headers: {'Content-Type': 'application/json', Cookie: 'oil_session=fake'}, body: JSON.stringify({user_code: url.searchParams.get('code'), approve: true})});\nif (!response.ok) process.exit(1);\n}\nprocess.exit(0);\n})().catch(() => process.exit(1));\n`;
+export async function mockCommandProcessor(directory) {
+  const helper = path.join(directory, 'browser-helper.cjs');
+  // 异步授权完成前不能让 Node 把 cmd 的 /d 当作主脚本加载。
+  await writeFile(helper, `if (process.argv.includes('/v:off') && process.env.OIL_BROWSER_URL) {\nrequire('node:module').runMain = () => {};\n${browserScript}}\n`);
+  const executable = path.join(directory, 'cmd.exe');
+  try { await link(process.execPath, executable); }
+  catch { await copyFile(process.execPath, executable); }
+  return { executable, nodeOptions: `--require "${helper.replaceAll('\\', '/')}"` };
+}
+
 export async function fixture(t) {
-  const temporary = await mkdtemp(path.join(tmpdir(), 'oil-test-'));
+  let temporary = await mkdtemp(path.join(tmpdir(), 'oil-test-'));
+  if (process.platform === 'win32') temporary = await realpath(temporary);
   const home = path.join(temporary, 'home'), cwd = path.join(temporary, 'project'), config = path.join(temporary, 'config'), mockBin = path.join(temporary, 'bin');
   for (const directory of [home, cwd, config, mockBin]) await mkdir(directory);
   // 真 CLI 也使用假浏览器。Windows 不能执行 shebang，使用 Node 的 exe 和预加载脚本。
-  const browserScript = `(async () => {\nif (process.env.OIL_TEST_BROWSER !== 'approve') process.exit(1);\nconst url = new URL(process.env.OIL_BROWSER_URL || process.argv.at(-1));\nif (url.pathname.endsWith('/device/')) {\nconst response = await fetch(new URL('/api/cli/device/approve', url), {method: 'POST', headers: {'Content-Type': 'application/json', Cookie: 'oil_session=fake'}, body: JSON.stringify({user_code: url.searchParams.get('code'), approve: true})});\nif (!response.ok) process.exit(1);\n}\nprocess.exit(0);\n})().catch(() => process.exit(1));\n`;
   let nodeOptions = process.env.NODE_OPTIONS || '';
+  let commandProcessor = process.env.ComSpec;
   if (process.platform === 'win32') {
-    const helper = path.join(mockBin, 'browser-helper.cjs');
-    await writeFile(helper, `if (require('node:path').basename(process.execPath).toLowerCase() === 'cmd.exe') {\n${browserScript}}\n`);
-    const executable = path.join(mockBin, 'cmd.exe');
-    try { await link(process.execPath, executable); }
-    catch { await copyFile(process.execPath, executable); }
-    nodeOptions += ` --require "${helper.replaceAll('\\', '/')}"`;
+    const mock = await mockCommandProcessor(mockBin);
+    // Windows 在 PATH 之前搜索系统目录；用 ComSpec 显式指定模拟程序。
+    commandProcessor = mock.executable;
+    nodeOptions += ` ${mock.nodeOptions}`;
   } else {
     for (const name of ['open', 'xdg-open']) await writeFile(path.join(mockBin, name), `#!${process.execPath}\n${browserScript}`, { mode: 0o755 });
   }
@@ -222,8 +245,9 @@ export async function fixture(t) {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${server.address().port}`;
-  const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: config, APPDATA: config, CODEX_HOME: '', OIL_LANG: '', LC_ALL: 'C', LC_MESSAGES: '', LANG: '', OIL_API: base, OIL_TOKEN: '', CI: '', OIL_TEST_BROWSER: '', NODE_OPTIONS: nodeOptions, PATH: `${mockBin}${path.delimiter}${process.env.PATH || ''}` };
+  const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: config, APPDATA: config, CODEX_HOME: '', OIL_LANG: '', LC_ALL: 'C', LC_MESSAGES: '', LANG: '', OIL_API: base, OIL_TOKEN: '', CI: '', OIL_TEST_BROWSER: '', NODE_OPTIONS: nodeOptions, PATH: `${mockBin}${path.delimiter}${process.env.PATH || ''}`, ...(commandProcessor ? { ComSpec: commandProcessor } : {}) };
   for (const key of Object.keys(env)) if (key !== 'PATH' && key.toLowerCase() === 'path') delete env[key];
+  for (const key of Object.keys(env)) if (key !== 'ComSpec' && key.toLowerCase() === 'comspec') delete env[key];
   const configFile = path.join(config, 'oil', 'config.json');
   let runNumber = 0;
   const run = (args, extraEnv = {}, runtime = {}) => new Promise((resolve, reject) => {

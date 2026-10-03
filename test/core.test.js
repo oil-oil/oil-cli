@@ -192,7 +192,7 @@ test('配置位置遵守 XDG、HOME 和 Windows APPDATA；浏览器调用平台�
   assert.equal(configPath({ HOME: '/tmp/home' }, 'linux'), '/tmp/home/.config/oil/config.json');
   assert.equal(configPath({ HOME: '/tmp/home', XDG_CONFIG_HOME: '/tmp/config' }, 'darwin'), '/tmp/config/oil/config.json');
   assert.equal(configPath({ APPDATA: 'C:\\Users\\test\\AppData\\Roaming' }, 'win32'), 'C:\\Users\\test\\AppData\\Roaming\\oil\\config.json');
-  for (const [platform, command] of [['darwin', 'open'], ['linux', 'xdg-open'], ['win32', 'cmd.exe']]) {
+  for (const [platform, command] of [['darwin', 'open'], ['linux', 'xdg-open'], ['win32', process.env.ComSpec || 'cmd.exe']]) {
     let called;
     assert.equal(await openBrowser('https://example.com/pay?a=1&b=2', platform, async (...args) => { called = args; }), true);
     assert.equal(called[0], command);

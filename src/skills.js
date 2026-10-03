@@ -2,7 +2,7 @@ import { t, skillLabel } from './i18n.js';
 import { lstat, stat, realpath, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { CliError } from './io.js';
-import { pathsFor, userHome, directoryKey, sameDirectory } from './platform.js';
+import { pathsFor, userHome, directoryKey } from './platform.js';
 
 const agents = ['claude', 'codex', 'agents', 'cursor', 'workbuddy'];
 const projectAgents = ['claude', 'agents', 'codex'];
@@ -175,7 +175,8 @@ function agentRootGroups() {
 // 显式路径也按宿主识别；无法归属的自定义目录只清理自身。
 export async function sameAgentRoots(directory) {
   const groups = agentRootGroups();
-  const exact = groups.find((roots) => roots.some((root) => sameDirectory(root, directory)));
+  // 先按逻辑位置归属宿主，避免多个宿主的链接指向同一目录时误选宿主。
+  const exact = groups.find((roots) => roots.some((root) => directoryKey(root, process.platform, null) === directoryKey(directory, process.platform, null)));
   if (exact) return [...new Set([directory, ...exact])];
   const resolved = directoryKey(await canonicalDirectory(directory));
   const matches = [];

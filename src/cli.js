@@ -189,7 +189,7 @@ async function install(ctx, name = ctx.options.skill) {
   const found = await scan(ctx.names, roots);
   const actions = [], skipped = [];
   for (const root of roots) {
-    const matching = found.filter((item) => item.root === root && item.name === name);
+    const matching = found.filter((item) => sameDirectory(item.root, root) && item.name === name);
     const candidates = matching.length ? matching : [{ name, path: path.join(root, name), version: null }];
     for (const item of candidates) {
       if (await isDevelopmentDirectory(item.path)) { skipped.push(skippedInstallation(item)); continue; }
@@ -199,7 +199,7 @@ async function install(ctx, name = ctx.options.skill) {
   if (!actions.length) { ctx.output.write({ installations: [], removed: [], skipped, warnings: [] }, skippedLines(skipped)); return 0; }
   if (paid) { await requireLogin(ctx); await requirePurchase(ctx, name); }
   const cleanup = await addFreeReplacements(ctx, actions);
-  skipped.push(...cleanup.skipped.filter((item) => !skipped.some((existing) => existing.path === item.path)));
+  skipped.push(...cleanup.skipped.filter((item) => !skipped.some((existing) => sameDirectory(existing.path, item.path))));
   const versions = await ctx.client.versions(ctx.catalog);
   const warnings = await apply(ctx, actions, versions, { purchaseOnInactive: true });
   const installed = await scan(ctx.names, [...roots, ...cleanup.roots]);
@@ -248,7 +248,7 @@ async function update(ctx) {
   const pending = eligible.filter((item) => !item.version || compare(item.version, versions[item.name].latest) < 0);
   const actions = pending.map((item) => ({ name: item.name, path: item.path, previousName: item.name, previousVersion: item.version }));
   const cleanup = await addFreeReplacements(ctx, actions, eligible.filter((item) => item.name === 'oil-ui-pro'));
-  skipped.push(...cleanup.skipped.filter((item) => !skipped.some((existing) => existing.path === item.path)));
+  skipped.push(...cleanup.skipped.filter((item) => !skipped.some((existing) => sameDirectory(existing.path, item.path))));
   const replacements = actions.filter((action) => !action.remove);
   if (replacements.some((item) => findSkill(ctx.catalog, item.name).paid)) await requireLogin(ctx);
   if (replacements.length && !await ctx.confirm(t('confirmUpdate', { count: replacements.length }), ctx.options.yes, ctx.interactive, ctx.signal, true)) {

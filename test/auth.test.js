@@ -96,7 +96,7 @@ test('真实 CLI 在设备码显示后被杀掉，浏览器随后允许，下一
   f.state.requireApproval = true;
   const args = ['install', 'oil-ui-pro', '--to', 'codex'];
   const first = await f.run(args, {}, { real: true, killOnDevice: true });
-  assert.equal(first.signal, process.platform === 'win32' ? null : 'SIGKILL');
+  assert.equal(first.signal, 'SIGKILL');
   assert.notEqual(first.code, 0);
   assert.equal(f.state.devicePolls, 0);
   const pending = (await config(f)).pending_device;

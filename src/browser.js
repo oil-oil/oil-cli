@@ -12,7 +12,7 @@ export async function openBrowser(value, platform = process.platform, runner = e
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
   } catch { throw new CliError(t('invalidBrowser'), 1, 'invalid_response'); }
   const options = { timeout: timeoutMs, windowsHide: true, maxBuffer: 1024, env: process.env };
-  const command = platform === 'darwin' ? 'open' : platform === 'win32' ? 'cmd.exe' : 'xdg-open';
+  const command = platform === 'darwin' ? 'open' : platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'xdg-open';
   const args = platform === 'win32'
     ? ['/d', '/v:off', '/s', '/c', '"start "" "%OIL_BROWSER_URL%""']
     : [url.href];

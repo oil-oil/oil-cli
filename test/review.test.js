@@ -326,7 +326,7 @@ test('真实入口被中断后付款，下一进程读取已保存的会话并�
   const f = await fixture(t);
   f.state.checkoutActiveAfter = Infinity;
   const first = await f.run(args, { OIL_TOKEN: INACTIVE }, { real: true, killOnCheckout: true });
-  assert.equal(first.signal, process.platform === 'win32' ? null : 'SIGKILL');
+  assert.equal(first.signal, 'SIGKILL');
   assert.notEqual(first.code, 0);
   const saved = await pending(f);
   const session = f.state.sessions.get(saved.id);

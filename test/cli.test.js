@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { readFile, writeFile, mkdir, access, stat, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { fixture, writeSkill, snapshot, TOKEN, INVALID, INACTIVE, configMode, linkDirectory, pack } from './fixture.js';
+import { fixture, writeSkill, snapshot, TOKEN, INVALID, INACTIVE, configMode, linkDirectory, pack, prependArchiveLink } from './fixture.js';
 
 const data = (result) => {
   assert.equal(result.signal, null, result.stderr);
@@ -222,8 +222,10 @@ test('压缩包 SKILL 名不符、额外顶层目录和软链接均拒绝，目�
   assert.equal(result.code, 1);
   assert.equal(data(result).error, 'invalid_archive');
   assert.deepEqual(await snapshot(installed), before);
-  await linkDirectory(f.temporary, path.join(artifact.source, 'oil-ui', 'escape'));
   await repack(['oil-ui']);
+  await prependArchiveLink(artifact.file, 'oil-ui/escape', '../..');
+  artifact.body = await readFile(artifact.file);
+  artifact.sha256 = createHash('sha256').update(artifact.body).digest('hex');
   result = await f.run(['install', 'oil-ui', '--to', 'codex', '--yes', '--json']);
   assert.equal(result.code, 1);
   assert.equal(data(result).error, 'invalid_archive');

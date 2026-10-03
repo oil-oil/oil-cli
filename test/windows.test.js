@@ -12,7 +12,7 @@ import { configPath } from '../src/config.js';
 import { formatCommand } from '../src/i18n.js';
 import { openBrowser } from '../src/browser.js';
 import { replaceAll, validateArchive } from '../src/install.js';
-import { fixture, writeSkill, snapshot, TOKEN } from './fixture.js';
+import { fixture, writeSkill, snapshot, TOKEN, mockCommandProcessor } from './fixture.js';
 
 const exec = promisify(execFile);
 const windows = { USERPROFILE: 'C:\\Users\\中文 user', HOME: 'D:\\Git Home', APPDATA: 'C:\\Users\\中文 user\\AppData\\Roaming' };
@@ -49,10 +49,38 @@ test('Windows 扫描范围包含五个用户目录和三个项目目录，WorkBu
 });
 
 test('Windows 路径比较统一大小写、/ 和扩展路径前缀，POSIX 保留大小写', () => {
-  assert.equal(directoryKey('C:/Users/Test/.Claude/SKILLS/../skills', 'win32'), directoryKey('c:\\users\\test\\.claude\\skills', 'win32'));
-  assert.equal(directoryKey('\\\\?\\C:\\Users\\Test\\skills', 'win32'), directoryKey('c:/users/test/skills', 'win32'));
-  assert.equal(directoryKey('\\\\?\\UNC\\Server\\Share\\Skills', 'win32'), directoryKey('\\\\server\\share\\skills', 'win32'));
+  assert.equal(directoryKey('C:/Users/Test/.Claude/SKILLS/../skills', 'win32', null), directoryKey('c:\\users\\test\\.claude\\skills', 'win32', null));
+  assert.equal(directoryKey('\\\\?\\C:\\Users\\Test\\skills', 'win32', null), directoryKey('c:/users/test/skills', 'win32', null));
+  assert.equal(directoryKey('\\\\?\\UNC\\Server\\Share\\Skills', 'win32', null), directoryKey('\\\\server\\share\\skills', 'win32', null));
   assert.notEqual(directoryKey('/tmp/Skills', 'linux'), directoryKey('/tmp/skills', 'linux'));
+});
+
+test('Windows 路径比较解析短路径父目录，即使 Skill 目标尚未创建', () => {
+  const resolvePath = (value) => {
+    if (value === 'C:\\Users\\RUNNER~1') return '\\\\?\\C:\\Users\\runneradmin';
+    throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+  };
+  assert.equal(directoryKey('C:\\Users\\RUNNER~1\\.claude\\skills', 'win32', resolvePath), 'c:\\users\\runneradmin\\.claude\\skills');
+  assert.throws(() => directoryKey('C:\\locked', 'win32', () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); }), { code: 'EACCES' });
+});
+
+test('Windows 短路径 HOME 与长路径项目正确归属同宿主，并保留其他宿主', { skip: process.platform !== 'win32' }, async (t) => {
+  const f = await fixture(t);
+  const result = await exec(process.env.ComSpec || 'cmd.exe', ['/d', '/v:off', '/s', '/c', '"for %I in ("%OIL_TEST_HOME%") do @echo %~sI"'], {
+    windowsVerbatimArguments: true, windowsHide: true, timeout: 5000, env: { ...process.env, OIL_TEST_HOME: f.home },
+  });
+  const shortHome = result.stdout.trim();
+  assert.equal(directoryKey(shortHome), directoryKey(f.home));
+  assert.equal(directoryKey(path.join(shortHome, 'not-created')), directoryKey(path.join(f.home, 'not-created')));
+  const free = await writeSkill(path.join(f.home, '.claude', 'skills'), 'oil-ui', '0.8.0', 'renamed-free');
+  const other = await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-ui', '0.8.0');
+  const before = await snapshot(other);
+  await writeSkill(path.join(f.cwd, '.claude', 'skills'), 'oil-ui-pro', '0.8.0');
+  const updated = await f.run(['update', 'oil-ui-pro', '--json'], { HOME: shortHome, USERPROFILE: shortHome, OIL_TOKEN: TOKEN });
+  assert.equal(updated.code, 0, updated.stdout + updated.stderr);
+  assert.deepEqual(JSON.parse(updated.stdout).removed.map((value) => directoryKey(value)), [directoryKey(free, process.platform, null)]);
+  await assert.rejects(access(free), { code: 'ENOENT' });
+  assert.deepEqual(await snapshot(other), before);
 });
 
 test('POSIX 设置 0600 并保留错误，Windows 沿用 ACL 不调用 chmod', async () => {
@@ -77,12 +105,27 @@ test('Windows 浏览器命令保持固定，URL 的 &、%、!、^ 和引号通�
   const value = 'https://example.com/pay?a=1&b=%PATH%&bang=!TEMP!&caret=^&paren=()&quote="';
   let called;
   assert.equal(await openBrowser(value, 'win32', async (...args) => { called = args; }), true);
-  assert.equal(called[0], 'cmd.exe');
+  assert.equal(called[0], process.env.ComSpec || 'cmd.exe');
   assert.deepEqual(called[1], ['/d', '/v:off', '/s', '/c', '"start "" "%OIL_BROWSER_URL%""']);
   assert.equal(called[2].windowsVerbatimArguments, true);
   assert.equal(called[2].env.OIL_BROWSER_URL, new URL(value).href);
   assert(!called[1].some((arg) => arg.includes('example.com')));
   assert.equal(await openBrowser(value, 'win32', async () => { throw new Error('no browser'); }), false);
+});
+
+test('模拟 Windows 命令处理器等待异步浏览器授权，成功和失败都保留真实退出码', async (t) => {
+  const f = await fixture(t);
+  f.state.userCode = 'mock-code';
+  const directory = await mkdtemp(path.join(f.temporary, 'mock-cmd-'));
+  const mock = await mockCommandProcessor(directory);
+  const value = `${f.base}/device/?code=mock-code&extra=%PATH%`;
+  for (const approve of [false, true]) {
+    const opened = await openBrowser(value, 'win32', async (command, args, options) => {
+      await exec(mock.executable, args, { ...options, env: { ...options.env, NODE_OPTIONS: mock.nodeOptions, OIL_TEST_BROWSER: approve ? 'approve' : '' } });
+    });
+    assert.equal(opened, approve);
+    assert.equal(f.state.deviceApproved, approve);
+  }
 });
 
 test('Windows 可复制命令按 PowerShell 保留盘符、空格、单引号和 shell 字符', () => {
