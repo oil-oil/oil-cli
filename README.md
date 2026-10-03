@@ -12,9 +12,9 @@ oiloil 商店的命令行工具：安装和更新 Oil UI 这类 Skill，付费�
 
 也可以自己在终端运行这行命令。需要 Node.js 18 以上，oil 本身不用单独安装。
 
-oil 会把 Skill 装进本机检测到的 Agent 目录：`~/.claude/skills`、`~/.codex/skills`、`~/.cursor/skills`，以及已经存在的 `~/.agents/skills`。付费 Skill 第一次安装时会打开浏览器，登录订阅用的 oiloil 账号，核对终端里显示的代码后点“允许”，安装会自动继续。
+oil 会把 Skill 装进本机检测到的 Agent 目录：`~/.claude/skills`、`~/.codex/skills`、`~/.cursor/skills`，以及已经存在的 `~/.agents/skills`。付费 Skill 第一次安装时会打开浏览器，登录 oiloil 账号，核对终端里显示的代码后点“允许”。账号还没解锁这个 Skill 时，oil 会自动打开付款页并打印链接；付款后每 3 秒检查一次，解锁后继续安装。Oil UI Pro 目前是 69 元买断，包含之后所有版本的更新。
 
-Agent 运行时如果提示去浏览器允许，点完后让 Agent 再运行一次同样的命令。
+购买时，有交互终端最多等 15 分钟；Agent 非交互运行最多等 60 秒。如果提示去浏览器允许登录或完成付款，操作后让 Agent 再运行一次同样的命令。已付款会直接安装；还没付款会生成新的付款链接。
 
 ## 常用命令
 
@@ -22,19 +22,19 @@ Agent 运行时如果提示去浏览器允许，点完后让 Agent 再运行一�
 
 | 命令 | 作用 |
 | --- | --- |
-| `oil status` | 看账号、订阅和本机每个 Skill 的版本；有新版本时列出中间每一版的更新说明 |
+| `oil status` | 看账号、购买状态和本机每个 Skill 的版本；有新版本时列出中间每一版的更新说明 |
 | `oil update` | 把本机的 Skill 都更新到最新版 |
 | `oil install <skill>` | 安装。想指定位置时加 `--to`，可以写 `claude`、`codex`、`agents`、`cursor` 或一个 skills 目录 |
 | `oil list` | 看商店里能装的 Skill 和价格 |
-| `oil subscribe <skill>` | 打开付款页，订阅生效后自动安装 |
-| `oil manage` | 打开订阅管理页：换卡、看账单、取消订阅 |
+| `oil subscribe <skill> [--plan <在售方案>]` | 购买后自动安装。省略 `--plan` 时，由服务端选择当前在售方案 |
+| `oil manage` | 打开购买管理页，查看账单和付款方式 |
 | `oil login`、`oil logout` | 登录或退出这台设备 |
 
 ## 在服务器和 CI 上用
 
-没有浏览器时，在 [ui.oiloil.org/account](https://ui.oiloil.org/account/) 新建一个令牌，用 `oil login --token <令牌>` 保存，或者设置环境变量 `OIL_TOKEN`。环境变量 `CI` 为真时，oil 不会发起浏览器登录。
+没有浏览器时，在 [ui.oiloil.org/account](https://ui.oiloil.org/account/) 新建一个令牌，用 `oil login --token <令牌>` 保存，或者设置环境变量 `OIL_TOKEN`。环境变量 `CI` 为真时，oil 不会发起浏览器登录，也不会打开付款页；账号还没解锁时直接退出 3，给出网页购买地址，付款后重跑即可安装。
 
-所有命令都支持 `--json`。退出码：0 成功，1 出错，2 用法错误，3 没登录或没有订阅。
+所有命令都支持 `--json`，登录和购买流程会输出 JSON Lines。购买未完成时输出 `error: "payment_pending"`、`skill`、`url`、`purchase_url` 和 `next_command`，可用同一命令继续。退出码：0 成功，1 出错，2 用法错误，3 需要登录或完成购买。
 
 ## 安全
 

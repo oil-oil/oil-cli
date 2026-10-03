@@ -8,23 +8,26 @@ import { openBrowser } from './browser.js';
 import { isSkillName, scan, inspectSkill, isDevelopmentDirectory, installationRoots, uniqueDirectories, resolveDirectory, targetRoot, compare, updates, conflicts } from './skills.js';
 import { prepare, replaceAll } from './install.js';
 import { login, loadAuth, requireLogin } from './auth.js';
+import { requirePurchase } from './purchase.js';
 
 const help = [
   'oil：安装、更新和管理 oiloil 商店里的 Skill。',
   '用法：npx github:oil-oil/oil-cli <命令> [--json] [--yes]',
-  'status（默认）                 查看账号、订阅、安装版本和更新说明',
+  'status（默认）                 查看账号、购买状态、安装版本和更新说明',
   'list                          查看免费和付费 Skill、价格',
   'install <skill> [--to <claude|codex|agents|cursor|路径>] [--to …]',
   'update [<skill>] [--path <目录>]  更新全部、一个 Skill 或指定目录',
   'login [--token <令牌>]         设备码登录，或校验并保存令牌',
   'logout                        撤销令牌并删除本机配置',
-  'subscribe <skill> [--plan monthly]  打开付款页面，等待订阅生效',
-  'manage                        打开订阅管理页面',
+  'subscribe <skill> [--plan <在售方案>]  打开付款页面，购买后自动安装',
+  'manage                        打开购买管理页面',
   'help / --version              查看帮助 / CLI 版本',
   '--to 路径指向 skills 根目录；--yes 确认替换，并在装付费版时移除同位置免费版。',
   '省略 --to 时自动检测本机 Agent；非交互安装、更新无需 --yes。',
   '含 .git 的开发目录会跳过；CI 需要 OIL_TOKEN，其他环境可内联设备码登录。',
-  '--json 输出 JSON；设备码登录和订阅等待使用 JSON Lines。',
+  '付费安装会内联登录、购买；购买等待：终端最多 15 分钟，非交互最多 60 秒。',
+  'CI 不打开付款页；未购买时退出 3，给出网页购买地址。',
+  '--json 输出 JSON；设备码登录和购买等待使用 JSON Lines。',
 ];
 
 export function parseArgs(argv) {
@@ -79,7 +82,7 @@ function localDate(seconds) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 const subscriptionLines = (subscriptions) => subscriptions.length ? subscriptions.map((s) =>
-  `${s.name || s.skill}：${subscriptionLabel(s.status)}（${planLabel(s.plan)}）${s.renews != null ? `，续费 ${localDate(s.renews)}` : ''}${s.ends != null ? `，到期 ${localDate(s.ends)}` : ''}`) : ['没有付费订阅。'];
+  `${s.name || s.skill}：${subscriptionLabel(s.status)}（${planLabel(s.plan)}）${s.renews != null ? `，续费 ${localDate(s.renews)}` : ''}${s.ends != null ? `，到期 ${localDate(s.ends)}` : ''}`) : ['尚未购买付费 Skill。'];
 const skippedInstallation = (item) => ({ name: item.name, path: item.path, reason: 'development_directory' });
 const skippedLines = (skipped) => skipped.map((item) => `${item.name}：开发目录，跳过（${item.path}）`);
 
@@ -126,12 +129,19 @@ async function list(ctx) {
   return 0;
 }
 
-async function apply(ctx, actions, versions) {
+async function apply(ctx, actions, versions, { purchaseOnInactive = false } = {}) {
   const prepared = new Map();
   try {
     for (const name of new Set(actions.filter((action) => !action.remove).map((action) => action.name))) {
       const { product, paid } = findSkill(ctx.catalog, name);
-      prepared.set(name, await prepare(ctx.client, name, versions[name], ctx.token, paid, product, ctx.signal));
+      let item;
+      try { item = await prepare(ctx.client, name, versions[name], ctx.token, paid, product, ctx.signal); }
+      catch (error) {
+        if (!purchaseOnInactive || !paid || !(error instanceof CliError) || error.details.http_status !== 402) throw error;
+        await requirePurchase(ctx, name, { force: true, plan: ctx.options.plan });
+        item = await prepare(ctx.client, name, versions[name], ctx.token, paid, product, ctx.signal);
+      }
+      prepared.set(name, item);
     }
     return await replaceAll(actions.map((action) => ({ ...action, source: action.remove ? undefined : prepared.get(action.name).source })), { signal: ctx.signal, names: ctx.names });
   } finally {
@@ -164,7 +174,7 @@ async function install(ctx, name = ctx.options.skill) {
     }
   }
   if (!actions.length) { ctx.output.write({ installations: [], removed: [], skipped, warnings: [] }, skippedLines(skipped)); return 0; }
-  if (paid) await requireLogin(ctx);
+  if (paid) { await requireLogin(ctx); await requirePurchase(ctx, name); }
   const activeRoots = new Set(actions.map((action) => path.dirname(action.path)));
   const free = paid && product.free ? found.filter((item) => item.name === product.free.skill && activeRoots.has(item.root)) : [];
   const removable = free.filter((item) => !item.development);
@@ -180,7 +190,7 @@ async function install(ctx, name = ctx.options.skill) {
     }
   }
   const versions = await ctx.client.versions(ctx.catalog);
-  const warnings = await apply(ctx, actions, versions);
+  const warnings = await apply(ctx, actions, versions, { purchaseOnInactive: true });
   warnings.push(...conflicts(await scan(ctx.names, roots), ctx.catalog));
   const installations = actions.filter((action) => !action.remove).map((action) => ({ name, path: action.path,
     previous: action.previousName === name ? action.previousVersion : null, version: versions[name].latest }));
@@ -225,41 +235,16 @@ async function update(ctx) {
   return 0;
 }
 
-async function subscribed(ctx, name, account) {
-  const subscription = account.subscriptions.find((s) => s.skill === name && ['active', 'canceling', 'past_due', 'lifetime', 'trialing'].includes(s.status));
-  if (!subscription) return false;
-  ctx.output.write({ event: 'subscribed', skill: name, subscription }, [`已订阅 ${name}。`]);
-  if (await ctx.confirm(`现在安装 ${name}？`, ctx.options.yes, ctx.interactive, ctx.signal, true)) await install(ctx, name);
-  else ctx.output.write({ event: 'install_hint', install_command: `oil install ${name}` }, [`以后安装：oil install ${name}`]);
-  return true;
-}
 async function subscribe(ctx) {
   const name = ctx.options.skill;
   const { product, paid } = findSkill(ctx.catalog, name);
-  if (!paid) throw new CliError(`${name} 是免费 Skill，无需订阅。`, 2, 'usage');
+  if (!paid) throw new CliError(`${name} 是免费 Skill，无需购买。`, 2, 'usage');
   if (ctx.options.plan && !Object.hasOwn(product.prices, ctx.options.plan)) throw new CliError(`这个产品没有 ${ctx.options.plan} 方案。`, 2, 'usage');
   await requireLogin(ctx);
-  let checkout;
-  try { checkout = await ctx.client.request('/api/store/checkout', { method: 'POST', token: ctx.token, body: { skill: name, ...(ctx.options.plan ? { plan: ctx.options.plan } : {}) }, skill: name, product }); }
-  catch (error) {
-    if (error instanceof CliError && error.error === 'already_active' && error.details.http_status === 409) {
-      if (await subscribed(ctx, name, await ctx.client.me(ctx.token))) return 0;
-    }
-    throw error;
-  }
-  ctx.output.write({ event: 'checkout', skill: name, url: checkout?.url }, [`付款页面：${checkout?.url}`, '等待订阅生效，每 3 秒检查一次；最长等待 15 分钟，按 Ctrl+C 取消。']);
-  const deadline = ctx.now() + 900_000;
-  const opened = await ctx.openBrowser(checkout?.url);
-  if (!opened && !ctx.options.json) ctx.output.write({ event: 'browser', opened }, [`无法打开浏览器，请打开：${checkout.url}`]);
-  while (ctx.now() < deadline) {
-    await ctx.sleep(Math.min(3000, deadline - ctx.now()), undefined, { signal: ctx.signal });
-    if (ctx.now() >= deadline) break;
-    let account;
-    try { account = await ctx.client.me(ctx.token, { timeoutMs: Math.min(30_000, deadline - ctx.now()) }); }
-    catch (error) { if (ctx.now() >= deadline) break; throw error; }
-    if (ctx.now() < deadline && await subscribed(ctx, name, account)) return 0;
-  }
-  throw new CliError('等待订阅超时，请运行 oil status 查看订阅，或重新运行 oil subscribe。', 1, 'subscription_timeout');
+  await requirePurchase(ctx, name, { plan: ctx.options.plan });
+  if (await ctx.confirm(`现在安装 ${name}？`, ctx.options.yes, ctx.interactive, ctx.signal, true)) return await install(ctx, name);
+  ctx.output.write({ event: 'install_hint', install_command: `oil install ${name}` }, [`以后安装：oil install ${name}`]);
+  return 0;
 }
 
 async function logout(ctx) {
@@ -308,7 +293,7 @@ export async function run(argv, runtime = {}) {
       await requireLogin(ctx);
       const portal = await ctx.client.request('/api/account/portal', { method: 'POST', token: ctx.token });
       const opened = await ctx.openBrowser(portal?.url);
-      output.write({ url: portal.url, opened }, [opened ? `已打开订阅管理：${portal.url}` : `无法打开浏览器，请打开：${portal.url}`]);
+      output.write({ url: portal.url, opened }, [opened ? `已打开购买管理：${portal.url}` : `无法打开浏览器，请打开：${portal.url}`]);
       return 0;
     }
     ctx.catalog = await ctx.client.catalog();

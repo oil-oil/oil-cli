@@ -82,12 +82,12 @@ test('付费安装；--yes 移除按 name 找到的免费版，保护其他目�
   assert.equal(f.state.requests.find((req) => req.path === '/api/store/download/oil-ui-pro').query.get('version'), '0.10.0');
 });
 
-test('Pro 下载 401 / 402 对应退出码 3，旧目录完整保留，错误脱敏', async (t) => {
+test('Pro 登录失效或 CI 未购买时退出码 3，旧目录完整保留，错误脱敏', async (t) => {
   const f = await fixture(t);
   const directory = await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-ui-pro', '0.8.0');
   const before = await snapshot(directory);
-  for (const [key, error] of [[INVALID, 'unauthorized'], [INACTIVE, 'inactive']]) {
-    const result = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: key });
+  for (const [key, error] of [[INVALID, 'unauthorized'], [INACTIVE, 'payment_pending']]) {
+    const result = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: key, CI: 'true' });
     assert.equal(result.code, 3);
     assert.equal(data(result).error, error);
     assert(!result.stdout.includes(key));
@@ -152,7 +152,7 @@ test('login --token 校验后保存权限 600；无效令牌不覆盖配置，�
   assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com' });
   const status = await f.run(['status', '--json']);
   assert.equal(status.code, 0);
-  assert.equal(data(status).account.subscriptions[0].status, 'active');
+  assert.equal(data(status).account.subscriptions[0].status, 'lifetime');
   assert(!status.stdout.includes(TOKEN));
 });
 
@@ -411,14 +411,14 @@ test('CI 里需要登录的四类命令退出 3 并提示 OIL_TOKEN，不启动�
   assert.equal(f.state.requests.filter((r) => r.path === '/api/cli/device').length, 0);
 });
 
-test('401 提示重新登录、402 给出产品订阅命令和网页链接，付费旧目录不变', async (t) => {
+test('update 401 提示重新登录、402 给出产品购买命令和网页链接，付费旧目录不变', async (t) => {
   const f = await fixture(t);
   const directory = await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-doc-pro', '0.8.0');
   const before = await snapshot(directory);
   let result = await f.run(['update', '--yes'], { OIL_TOKEN: INVALID });
   assert.equal(result.code, 3);
   assert.match(result.stderr, /登录已失效，重新运行 oil login/);
-  result = await f.run(['install', 'oil-doc-pro', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: INACTIVE });
+  result = await f.run(['update', 'oil-doc-pro', '--yes', '--json'], { OIL_TOKEN: INACTIVE });
   assert.equal(result.code, 3);
   assert.equal(data(result).subscribe_command, 'oil subscribe oil-doc-pro');
   assert.equal(data(result).subscription_url, `${f.base}/store/oil-doc-pro/`);
@@ -428,7 +428,7 @@ test('401 提示重新登录、402 给出产品订阅命令和网页链接，付
 test('subscribe 每 3 秒轮询账号，生效后非交互自动安装；传 plan、没有凭据 URL', async (t) => {
   const f = await fixture(t);
   await mkdir(path.join(f.home, '.claude'));
-  const result = await f.run(['subscribe', 'oil-ui-pro', '--plan', 'monthly', '--yes', '--json'], { OIL_TOKEN: INACTIVE });
+  const result = await f.run(['subscribe', 'oil-ui-pro', '--plan', 'lifetime', '--yes', '--json'], { OIL_TOKEN: INACTIVE });
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(result.trace.delays, [3000, 3000]);
   const events = result.stdout.trim().split('\n').map((line) => JSON.parse(line));
@@ -436,20 +436,22 @@ test('subscribe 每 3 秒轮询账号，生效后非交互自动安装；传 pla
   assert.equal(events[2].installations[0].path, path.join(f.home, '.claude', 'skills', 'oil-ui-pro'));
   assert.equal(result.trace.questions.length, 0);
   const request = f.state.requests.find((r) => r.path === '/api/store/checkout');
-  assert.deepEqual(request.body, { skill: 'oil-ui-pro', plan: 'monthly' });
+  assert.deepEqual(request.body, { skill: 'oil-ui-pro', plan: 'lifetime' });
   assert.equal(request.token, INACTIVE);
   assert(f.state.requests.filter((r) => r.path === '/api/auth/me').every((r) => r.token === INACTIVE));
   assert(f.state.requests.every((r) => !r.query.has('token')));
 });
 
-test('subscribe 交互询问并安装；已订阅 409 可继续，免费和未知 plan 是用法错误', async (t) => {
+test('subscribe 交互询问并安装；已解锁 409 可继续，免费和未知 plan 是用法错误', async (t) => {
   const f = await fixture(t);
   let result = await f.run(['subscribe', 'oil-ui-pro'], { OIL_TOKEN: INACTIVE }, { terminal: true, interactive: true, answers: [true, 'agents', true] });
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /已安装 oil-ui-pro/);
   assert.equal(result.trace.questions.length, 3);
   f.state.checkoutAlreadyActive = true;
-  result = await f.run(['subscribe', 'oil-ui-pro', '--json'], { OIL_TOKEN: TOKEN });
+  f.state.grants.set(INACTIVE, []);
+  f.state.checkoutToken = null;
+  result = await f.run(['subscribe', 'oil-ui-pro', '--json'], { OIL_TOKEN: INACTIVE });
   assert.equal(result.code, 0);
   assert(!result.stdout.includes('checkout'));
   for (const args of [['subscribe', 'oil-ui'], ['subscribe', 'oil-ui-pro', '--plan', 'yearly']]) {
@@ -462,9 +464,9 @@ test('subscribe 15 分钟超时不安装、不修改已有文件', async (t) => 
   f.state.checkoutActiveAfter = Infinity;
   const directory = await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-ui-pro', '0.8.0');
   const before = await snapshot(directory);
-  const result = await f.run(['subscribe', 'oil-ui-pro', '--json'], { OIL_TOKEN: INACTIVE });
-  assert.equal(result.code, 1);
-  assert.equal(JSON.parse(result.stdout.trim().split('\n').at(-1)).error, 'subscription_timeout');
+  const result = await f.run(['subscribe', 'oil-ui-pro', '--json'], { OIL_TOKEN: INACTIVE }, { terminal: true });
+  assert.equal(result.code, 3);
+  assert.equal(JSON.parse(result.stdout.trim().split('\n').at(-1)).error, 'payment_pending');
   assert.equal(result.trace.delays.reduce((sum, ms) => sum + ms, 0), 900000);
   assert.equal(f.state.checkoutPolls, 299);
   assert.deepEqual(await snapshot(directory), before);

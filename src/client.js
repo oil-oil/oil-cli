@@ -77,7 +77,7 @@ export class Client {
         if (response.status === 402) {
           details.subscribe_command = `oil subscribe ${skill || '<skill>'}`;
           details.subscription_url = this.subscriptionUrl(skill || '<skill>', product);
-          message = `没有订阅 ${skill || '这个 Skill'}。请运行 ${details.subscribe_command}，或打开 ${details.subscription_url}`;
+          message = `尚未购买 ${skill || '这个 Skill'}。请运行 ${details.subscribe_command}，或打开 ${details.subscription_url}`;
         }
         throw new CliError(message, [401, 402].includes(response.status) ? 3 : 1,
           response.status === 401 ? 'unauthorized' : response.status === 402 ? 'inactive' : typeof data?.error === 'string' ? data.error : 'http_error', details);

@@ -15,8 +15,8 @@ export const INACTIVE = 'oil_Empty0123456789abcdefghijklmnopqrstuvXYZ';
 export const INVALID = 'oil_Bad0123456789abcdefghijklmnopqrstuvXYZ';
 export const EMAIL = 'test@example.com';
 export const CATALOG = [
-  { id: 'oil-ui', name: 'Oil UI Pro', summary: '帮你做好界面。', features: [], free: { skill: 'oil-ui' }, paid: { skill: 'oil-ui-pro' }, prices: { monthly: { amount: 1990, currency: 'cny', interval: 'month' } }, page: '/pro/' },
-  { id: 'oil-doc', name: 'Oil Doc Pro', summary: '整理文档。', features: [], free: { skill: 'oil-doc' }, paid: { skill: 'oil-doc-pro' }, prices: { yearly: { amount: 9900, currency: 'cny', interval: 'year' } }, page: '/store/oil-doc-pro/' },
+  { id: 'oil-ui', name: 'Oil UI Pro', summary: '帮你做好界面。', features: [], free: { skill: 'oil-ui' }, paid: { skill: 'oil-ui-pro' }, offer: ['lifetime'], prices: { lifetime: { amount: 6900, currency: 'cny', interval: null } }, page: '/pro/' },
+  { id: 'oil-doc', name: 'Oil Doc Pro', summary: '整理文档。', features: [], free: { skill: 'oil-doc' }, paid: { skill: 'oil-doc-pro' }, offer: ['yearly'], prices: { yearly: { amount: 9900, currency: 'cny', interval: 'year' } }, page: '/store/oil-doc-pro/' },
 ];
 
 export async function writeSkill(root, name, version, folder = name) {
@@ -54,14 +54,19 @@ export async function fixture(t) {
   }
   const state = { catalog: structuredClone(CATALOG), latest: '0.10.0', badChecksum: false, missingChecksum: false, proBadChecksum: false, paidMissingChecksum: false,
     deviceStatuses: ['authorization_pending', 'success'], devicePolls: 0, deviceRequests: 0, interval: 5, expiresIn: 600, deviceApproved: false, requireApproval: false,
-    checkoutPolls: 0, checkoutActiveAfter: 2, checkoutAlreadyActive: false, logoutFailure: false, requests: [], revoked: new Set(), grants: new Map() };
+    checkoutPolls: 0, checkoutRequests: 0, checkoutActiveAfter: 2, checkoutAlreadyActive: false, downloadInactiveCount: 0,
+    logoutFailure: false, requests: [], revoked: new Set(), grants: new Map() };
   let base;
   const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
   const error = (res, status, code, message) => json(res, status, { error: code, message });
   const subscriptions = (token) => {
     if (state.subscriptions) return state.subscriptions;
     const names = state.grants.get(token) || (token === TOKEN ? ['oil-ui-pro', 'oil-doc-pro'] : []);
-    return names.map((skill) => ({ skill, name: state.catalog.find((p) => p.paid?.skill === skill)?.name || skill, plan: 'monthly', status: 'active', renews: 1793664000, ends: null }));
+    return names.map((skill) => {
+      const product = state.catalog.find((p) => p.paid?.skill === skill);
+      const plan = product?.offer?.[0] || 'lifetime';
+      return { skill, name: product?.name || skill, plan, status: plan === 'lifetime' ? 'lifetime' : 'active', renews: plan === 'lifetime' ? null : 1793664000, ends: null };
+    });
   };
   const server = createServer(async (req, res) => {
     try {
@@ -101,7 +106,11 @@ export async function fixture(t) {
         if (!archive) return error(res, 404, 'not_found', '没有该版本。');
         if (product.free?.skill === name) { res.writeHead(302, { Location: `${base}/releases/${name}-${version}.tar.gz` }); return res.end(); }
         if (!authenticate()) return;
-        if (!subscriptions(token).some((s) => s.skill === name)) return error(res, 402, 'inactive', '没有订阅。');
+        if (state.downloadInactiveCount > 0) {
+          state.downloadInactiveCount--;
+          state.grants.set(token, []);
+        }
+        if (!subscriptions(token).some((s) => s.skill === name)) return error(res, 402, 'inactive', '尚未购买。');
         res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Disposition': `attachment; filename="${name}-${version}.tar.gz"`,
           ...(state.paidMissingChecksum ? {} : { 'X-Content-SHA256': state.proBadChecksum ? 'f'.repeat(64) : archive.sha256 }), 'X-Skill-Version': state.badVersion ? '9.9.9' : version });
         return res.end(archive.body);
@@ -127,22 +136,29 @@ export async function fixture(t) {
         state.devicePolls++;
         if (status === 'upstream') return error(res, 502, 'upstream', '服务连接失败');
         if (status !== 'success') return error(res, 400, status, state.deviceErrorMessage ?? status);
-        return json(res, 200, { token: TOKEN, email: EMAIL });
+        return json(res, 200, { token: state.deviceToken ?? TOKEN, email: EMAIL });
       }
       if (req.method === 'GET' && url.pathname === '/api/auth/me') {
         if (!authenticate()) return;
         if (state.checkoutToken === token) {
           state.checkoutPolls++;
+          const pollError = state.checkoutPollErrors?.[state.checkoutPolls - 1];
+          if (pollError) return error(res, 502, 'upstream', '服务连接失败');
           if (state.checkoutPolls >= state.checkoutActiveAfter) state.grants.set(token, [state.checkoutSkill]);
         }
-        return json(res, 200, { email: EMAIL, github_login: null, subscriptions: subscriptions(token) });
+        return json(res, 200, { email: EMAIL, github_login: null, subscriptions: state.meSubscriptions ?? subscriptions(token) });
       }
       if (req.method === 'POST' && url.pathname === '/api/store/checkout') {
         if (!authenticate()) return;
-        if (state.checkoutAlreadyActive) return error(res, 409, 'already_active', '已经订阅。');
+        state.checkoutRequests++;
+        if (state.checkoutAlreadyActive) {
+          state.grants.set(token, [body.skill]);
+          return error(res, 409, 'already_active', '已经解锁。');
+        }
         state.checkoutToken = token;
         state.checkoutSkill = body.skill;
-        return json(res, 200, { url: `${base}/checkout` });
+        state.checkoutPolls = 0;
+        return json(res, 200, { url: state.checkoutUrl ?? `${base}/checkout?session=${state.checkoutRequests}` });
       }
       if (req.method === 'POST' && url.pathname === '/api/account/portal') {
         if (!authenticate()) return;
