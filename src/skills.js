@@ -163,6 +163,76 @@ export function targetRoot(value) {
   return resolveDirectory(value);
 }
 
+function agentRootGroups() {
+  return ['claude', 'codex', 'agents', 'cursor'].map((agent) => [
+    targetRoot(agent), ...(agent === 'cursor' ? [] : [path.resolve(`.${agent}`, 'skills')]),
+  ]);
+}
+
+// 显式路径也按宿主识别；无法归属的自定义目录只清理自身。
+export async function sameAgentRoots(directory) {
+  const groups = agentRootGroups();
+  const exact = groups.find((roots) => roots.some((root) => path.resolve(root) === path.resolve(directory)));
+  if (exact) return [...new Set([directory, ...exact])];
+  const resolved = await canonicalDirectory(directory);
+  const matches = [];
+  for (const roots of groups) {
+    if ((await Promise.all(roots.map(canonicalDirectory))).includes(resolved)) matches.push(roots);
+  }
+  return [...new Set([directory, ...(matches.length === 1 ? matches[0] : [])])];
+}
+
+// 保护 Skill 本身、skills 目录及其宿主目录上的软链接；不把系统路径别名当作安装链接。
+const installationParents = (root) => [root, ...(path.basename(root) === 'skills' ? [path.dirname(root)] : [])];
+async function hasDirectoryLink(directories) {
+  for (const current of directories) {
+    try { if ((await lstat(current)).isSymbolicLink()) return true; }
+    catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw new CliError(t('skillRead', { path: current }), 1, 'skill_read');
+    }
+  }
+  return false;
+}
+export const isLinkedInstallation = (directory) => hasDirectoryLink([directory, ...installationParents(path.dirname(directory))]);
+
+// 与版本扫描分开：不能因 real_path 去重而漏报软链接或未知同名目录。
+export async function freeReplacements(name, roots) {
+  const candidates = [], skipped = [], linkedTargets = new Set(), seenRoots = new Set();
+  for (const root of [...new Set(roots)]) {
+    // 普通路径别名去重，但软链接作用域必须保留，才能保护它指向的真实安装。
+    const linkedRoot = await hasDirectoryLink(installationParents(root));
+    const resolved = await canonicalDirectory(root);
+    if (!linkedRoot && seenRoots.has(resolved)) continue;
+    if (!linkedRoot) seenRoots.add(resolved);
+    let entries;
+    try { entries = await readdir(root, { withFileTypes: true }); }
+    catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue;
+      throw new CliError(t('scanRead', { path: root }), 1, 'skill_read');
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const directory = path.join(root, entry.name);
+      const item = await inspectSkill(directory, [name]);
+      if (!item && entry.name !== name) continue;
+      const candidate = item || { name, path: directory };
+      if (await isLinkedInstallation(directory)) {
+        if (item) linkedTargets.add(item.real_path);
+        skipped.push({ name, path: directory, reason: 'symbolic_link' });
+      } else if (item?.development || (!item && await isDevelopmentDirectory(directory))) {
+        skipped.push({ name, path: directory, reason: 'development_directory' });
+      } else if (!item) skipped.push({ name, path: directory, reason: 'unrecognized_skill' });
+      else candidates.push(candidate);
+    }
+  }
+  const removable = candidates.filter((item) => {
+    if (!linkedTargets.has(item.real_path)) return true;
+    skipped.push({ name, path: item.path, reason: 'symbolic_link' });
+    return false;
+  });
+  return { removable, skipped };
+}
+
 export async function scan(names, roots = discoveryRoots()) {
   // 同一目录可能经由不同路径（符号链接、/var 与 /private/var）被扫到两次，只保留一份。
   const found = [], seen = new Set();
@@ -194,9 +264,22 @@ export function updates(current, release) {
     .map(({ version, published_at, notes }) => ({ version, published_at, notes: typeof notes === 'string' ? notes : '' }));
 }
 
-export function conflicts(installed, catalog) {
-  return catalog.filter((product) => product.free && product.paid).flatMap((product) =>
-    [...new Set(installed.map((i) => i.root))]
-      .filter((root) => [product.free.skill, product.paid.skill].every((name) => installed.some((i) => i.root === root && i.name === name)))
-      .map((root) => t('conflict', { prefix: `${root}: `, free: skillLabel(product.free.skill), paid: skillLabel(product.paid.skill) })));
+export async function conflicts(installed, catalog) {
+  const warnings = [];
+  for (const product of catalog.filter((product) => product.free && product.paid)) {
+    const seen = new Set();
+    for (const pro of installed.filter((item) => item.name === product.paid.skill)) {
+      const roots = product.paid.skill === 'oil-ui-pro' ? await sameAgentRoots(pro.root) : [pro.root];
+      const canonical = [...new Set(await Promise.all(roots.map(canonicalDirectory)))];
+      const key = [...canonical].sort().join('\0');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      for (const free of installed.filter((item) => item.name === product.free.skill)) {
+        if (!canonical.includes(await canonicalDirectory(free.root))) continue;
+        warnings.push(t('conflict', { prefix: `${pro.root}: `, free: skillLabel(product.free.skill), paid: skillLabel(product.paid.skill) }));
+        break;
+      }
+    }
+  }
+  return warnings;
 }

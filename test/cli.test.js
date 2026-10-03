@@ -65,13 +65,13 @@ test('未知目录占用 oil-ui 时拒绝替换，已完成的其他目标也回
   assert.deepEqual(await readdir(path.join(f.home, '.codex', 'skills')), []);
 });
 
-test('付费安装；--yes 移除按 name 找到的免费版，保护其他目录', async (t) => {
+test('付费安装自动移除按 name 找到的免费版，保护其他目录', async (t) => {
   const f = await fixture(t);
   const root = path.join(f.home, '.codex', 'skills');
   const free = await writeSkill(root, 'oil-ui', '0.8.0', 'free-custom');
   const other = await writeSkill(root, 'other', '1.0.0');
   const before = await snapshot(other);
-  const result = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  const result = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--json'], { OIL_TOKEN: TOKEN });
   assert.equal(result.code, 0);
   const value = data(result);
   assert.equal(value.installations[0].name, 'oil-ui-pro');
@@ -156,17 +156,22 @@ test('login --token 校验后保存权限 600；无效令牌不覆盖配置，�
   assert(!status.stdout.includes(TOKEN));
 });
 
-test('两个版本同 Agent 目录时 status/update 提示冲突，装免费版也保留 Pro', async (t) => {
+test('两个版本同 Agent 时 status 和免费安装提示冲突，update 清理后不再警告', async (t) => {
   const f = await fixture(t);
   const root = path.join(f.home, '.codex', 'skills');
-  await writeSkill(root, 'oil-ui', '0.10.0');
+  const free = await writeSkill(root, 'oil-ui', '0.10.0');
   const pro = await writeSkill(root, 'oil-ui-pro', '0.10.0');
   const before = await snapshot(pro);
-  for (const args of [['status', '--json'], ['update', '--yes', '--json'], ['install', 'oil-ui', '--to', 'codex', '--yes', '--json']]) {
+  for (const args of [['status', '--json'], ['install', 'oil-ui', '--to', 'codex', '--yes', '--json']]) {
     const result = await f.run(args);
     assert.equal(result.code, 0);
     assert.match(data(result).warnings[0], /两个版本同时装会抢着接同一类请求/);
   }
+  const updated = await f.run(['update', '--json']);
+  assert.equal(updated.code, 0);
+  assert.deepEqual(data(updated).removed, [free]);
+  assert.deepEqual(data(updated).warnings, []);
+  await absent(free);
   assert.deepEqual(await snapshot(pro), before);
 });
 
@@ -177,7 +182,7 @@ test('下载摘要失败（免费版/Pro）以及摘要缺失时，原目录逐�
   const pro = await writeSkill(root, 'oil-ui-pro', '0.8.0');
   const before = await snapshot(root);
   f.state.badChecksum = true;
-  let result = await f.run(['update', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  let result = await f.run(['update', 'oil-ui', '--yes', '--json'], { OIL_TOKEN: TOKEN });
   assert.equal(result.code, 1);
   assert.equal(data(result).error, 'checksum_mismatch');
   assert.deepEqual(await snapshot(root), before);

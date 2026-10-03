@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtemp, mkdir, readFile, writeFile, rm, rename, access, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, rename, access, readdir, symlink, readlink } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -75,6 +75,53 @@ test('安装 Pro 时移除的免费版也跟随整批操作回滚', async (t) =>
   ]), { error: 'occupied' });
   assert.deepEqual(await snapshot(free), before);
   await assert.rejects(access(path.join(root, 'oil-ui-pro')), { code: 'ENOENT' });
+});
+
+test('跨用户和项目移除中途失败时，已更新 Pro 和已移除开源版一起还原', async (t) => {
+  const directory = await temp(t);
+  const user = path.join(directory, 'home', '.claude', 'skills');
+  const project = path.join(directory, 'project', '.claude', 'skills');
+  const pro = await writeSkill(user, 'oil-ui-pro', '0.8.0');
+  const free = await writeSkill(user, 'oil-ui', '0.8.0');
+  const projectFree = await writeSkill(project, 'oil-ui', '0.9.0');
+  const source = await writeSkill(path.join(directory, 'source'), 'oil-ui-pro', '0.10.0');
+  const before = await Promise.all([pro, free, projectFree].map(snapshot));
+  const renameFile = async (from, to) => {
+    if (from === projectFree) throw new Error('injected removal failure');
+    return rename(from, to);
+  };
+  await assert.rejects(replaceAll([
+    { path: pro, source, previousName: 'oil-ui-pro' },
+    { path: free, previousName: 'oil-ui', protectSymlinks: true },
+    { path: projectFree, previousName: 'oil-ui', protectSymlinks: true },
+  ], { renameFile }), { error: 'replace' });
+  assert.deepEqual(await Promise.all([pro, free, projectFree].map(snapshot)), before);
+  assert.deepEqual((await readdir(user)).sort(), ['oil-ui', 'oil-ui-pro']);
+  assert.deepEqual(await readdir(project), ['oil-ui']);
+});
+
+test('清理前重查符号链接，途中变成链接时回滚 Pro 并保留链接目标', async (t) => {
+  const directory = await temp(t);
+  const root = path.join(directory, 'skills');
+  const pro = await writeSkill(root, 'oil-ui-pro', '0.8.0');
+  const free = await writeSkill(root, 'oil-ui', '0.8.0');
+  const external = path.join(directory, 'external-free');
+  const source = await writeSkill(path.join(directory, 'source'), 'oil-ui-pro', '0.10.0');
+  const before = await Promise.all([snapshot(pro), snapshot(free)]);
+  const renameFile = async (from, to) => {
+    if (path.basename(from) === 'new' && to === pro) {
+      await rename(free, external);
+      await symlink(external, free, 'dir');
+    }
+    return rename(from, to);
+  };
+  await assert.rejects(replaceAll([
+    { path: pro, source, previousName: 'oil-ui-pro' },
+    { path: free, previousName: 'oil-ui', protectSymlinks: true },
+  ], { renameFile }), { error: 'symbolic_link' });
+  assert.deepEqual(await snapshot(pro), before[0]);
+  assert.deepEqual(await snapshot(external), before[1]);
+  assert.equal(await readlink(free), external);
 });
 
 test('还原本身失败时保留原目录备份，禁止清理掉它', async (t) => {

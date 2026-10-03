@@ -15,6 +15,8 @@ npx github:oil-oil/oil-cli help              # 全部命令
 
 输出语言跟随系统，也可以用 `--lang zh` 或 `--lang en` 指定。Codex 的安装位置跟随 `CODEX_HOME`。
 
+安装或更新 Oil UI Pro 会自动移除同一 Agent 用户目录和当前项目里的开源版，无需确认；自定义目录只清理同目录，开发目录、符号链接和无法识别的同名目录会跳过。
+
 ## 许可
 
 [MIT](LICENSE)

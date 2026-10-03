@@ -10,7 +10,7 @@ import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { CliError } from './io.js';
-import { inspectSkill, isDevelopmentDirectory, canonicalDirectory } from './skills.js';
+import { inspectSkill, isDevelopmentDirectory, isLinkedInstallation, canonicalDirectory } from './skills.js';
 
 const exec = promisify(execFile);
 const archiveError = () => new CliError(t('invalidArchive'), 1, 'invalid_archive');
@@ -183,10 +183,12 @@ async function exists(file) {
 // renameFile 可供测试注入真实的中途失败；CLI 使用系统 rename。
 export async function replaceAll(actions, { renameFile = rename, signal, names = [] } = {}) {
   // 在暂存前检查整批目标；在每次 rename 前再检查，防止下载期间变成开发目录。
-  const protect = async (directory) => {
+  const protect = async (action) => {
+    const directory = action.path;
+    if (action.protectSymlinks && await isLinkedInstallation(directory)) throw new CliError(t('skippedSymbolicLink', { name: action.previousName, path: directory }), 1, 'symbolic_link', { path: directory });
     if (await isDevelopmentDirectory(directory)) throw new CliError(t('developmentProtected', { path: directory }), 1, 'development_directory', { path: directory });
   };
-  for (const action of actions) await protect(action.path);
+  for (const action of actions) await protect(action);
   const paths = await Promise.all(actions.map((action) => canonicalDirectory(action.path)));
   for (let i = 0; i < paths.length; i++) {
     for (let j = 0; j < paths.length; j++) {
@@ -211,7 +213,7 @@ export async function replaceAll(actions, { renameFile = rename, signal, names =
     }
     for (const transaction of transactions) {
       if (signal?.aborted) throw new CliError(t('canceled'), 1, 'cancelled');
-      await protect(transaction.path);
+      await protect(transaction);
       const info = await exists(transaction.path);
       const current = info ? await inspectSkill(transaction.path, names) : null;
       if (current?.development) throw new CliError(t('developmentProtected', { path: transaction.path }), 1, 'development_directory', { path: transaction.path });

@@ -15,6 +15,8 @@ npx github:oil-oil/oil-cli help              # List all commands
 
 Output follows your system language; use `--lang zh` or `--lang en` to choose one. Codex installs follow `CODEX_HOME`.
 
+Installing or updating Oil UI Pro automatically removes the open source version from the same Agent's user and current project directories. Custom directories only clean their own location; development directories, symbolic links, and unrecognized directories with the same name are skipped.
+
 ## License
 
 [MIT](LICENSE)

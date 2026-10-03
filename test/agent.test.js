@@ -78,7 +78,7 @@ test('非交互付费安装默认移除免费版并说明；update 不需要 --y
   const free = await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-ui', '0.8.0', 'custom-free');
   let result = await f.run(['install', 'oil-ui-pro'], { OIL_TOKEN: TOKEN });
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /已移除同位置的开源版：/);
+  assert.match(result.stdout, /已移除同一 Agent 里的 Oil UI 开源版：/);
   await absent(free);
   f.state.latest = '0.11.0';
   result = await f.run(['update', '--json'], { OIL_TOKEN: TOKEN });
@@ -87,18 +87,21 @@ test('非交互付费安装默认移除免费版并说明；update 不需要 --y
   assert.equal(result.trace.questions.length, 0);
 });
 
-test('交互移除免费版默认是，用户可选择保留；--yes 跳过确认', async (t) => {
+test('交互安装只确认安装，自动移除免费版；--yes 跳过安装确认', async (t) => {
   const f = await fixture(t);
   const root = path.join(f.home, '.codex', 'skills');
   const free = await writeSkill(root, 'oil-ui', '0.8.0');
   let result = await f.run(['install', 'oil-ui-pro'], { OIL_TOKEN: TOKEN }, { interactive: true, answers: ['', 'n'] });
   assert.equal(result.code, 0);
-  await access(free);
-  assert.equal(result.trace.questions.length, 2);
-  assert.match(result.trace.questions[1], /开源版.*\[Y\/n\]/);
+  await absent(free);
+  assert.equal(result.trace.questions.length, 1);
+  assert.match(result.trace.questions[0], /安装.*\[Y\/n\]/);
+  assert.doesNotMatch(result.stdout, /抢着接同一类请求/);
+  await writeSkill(root, 'oil-ui', '0.8.0');
   result = await f.run(['install', 'oil-ui-pro'], { OIL_TOKEN: TOKEN }, { interactive: true, answers: ['', ''] });
   assert.equal(result.code, 0);
   await absent(free);
+  assert.equal(result.trace.questions.length, 1);
   await writeSkill(root, 'oil-ui', '0.8.0');
   result = await f.run(['install', 'oil-ui-pro', '--yes'], { OIL_TOKEN: TOKEN }, { interactive: true });
   assert.equal(result.code, 0);
@@ -327,7 +330,7 @@ test('一句安装命令的真实入口：非交互设备码登录后自动安�
   assert.match(result.stdout, /授权码：KDQW-7RTF/);
   assert.match(result.stdout, /已登录：test@example.com/);
   assert.match(result.stdout, /已安装 Oil UI Pro/);
-  assert.match(result.stdout, /已移除同位置的开源版/);
+  assert.match(result.stdout, /已移除同一 Agent 里的 Oil UI 开源版/);
   assert(f.state.deviceApproved);
   await absent(free);
   assert.match(await readFile(path.join(root, 'oil-ui-pro', 'SKILL.md'), 'utf8'), /0\.10\.0/);
