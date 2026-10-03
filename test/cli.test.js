@@ -142,13 +142,13 @@ test('login --token 校验后保存权限 600；无效令牌不覆盖配置，�
   const result = await f.run(['login', '--token', TOKEN, '--json']);
   assert.equal(result.code, 0);
   const value = data(result);
-  assert.equal(value.token, `${TOKEN.slice(0, 8)}…`);
+  assert.equal(value.token_prefix, `${TOKEN.slice(0, 8)}…`);
   assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com', api: f.base });
   const invalid = await f.run(['login', '--token', INVALID]);
   assert.equal(invalid.code, 3);
   assert(!invalid.stderr.includes(INVALID));
-  assert.match(invalid.stderr, /登录已失效，重新运行 oil login/);
+  assert.match(invalid.stderr, /登录已失效，请重新运行 npx github:oil-oil\/oil-cli login/);
   assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com', api: f.base });
   const status = await f.run(['status', '--json']);
   assert.equal(status.code, 0);
@@ -286,7 +286,7 @@ test('目录增加另一条产品线后能检测、列价、安装、单独更�
   const listing = data(await f.run(['list', '--json', '--yes']));
   assert.equal(listing.skills.length, 4);
   assert.equal(listing.skills.find((s) => s.skill === 'oil-doc-pro').prices.yearly.amount, 9900);
-  assert.match((await f.run(['list'])).stdout, /oil-doc-pro：付费（每年 99 CNY）/);
+  assert.match((await f.run(['list'])).stdout, /oil-doc-pro：付费（99 元，每年）/);
   const update = await f.run(['update', 'oil-doc', '--yes', '--json']);
   assert.equal(update.code, 0);
   assert.equal(data(update).installations.length, 1);
@@ -313,7 +313,7 @@ test('设备码 pending、slow_down、成功按 interval 轮询；JSON Lines 不
   assert.equal(events.length, 2);
   assert.equal(events[0].verification_uri, `${f.base}/device/`);
   assert.equal(events[0].user_code, 'KDQW-7RTF');
-  assert.equal(events[1].token, `${TOKEN.slice(0, 8)}…`);
+  assert.equal(events[1].token_prefix, `${TOKEN.slice(0, 8)}…`);
   assert(!result.stdout.includes('device_secret_0123456789'));
   assert(!result.stdout.includes(TOKEN));
   const request = f.state.requests.find((r) => r.path === '/api/cli/device');
@@ -417,10 +417,10 @@ test('update 401 提示重新登录、402 给出产品购买命令和网页链�
   const before = await snapshot(directory);
   let result = await f.run(['update', '--yes'], { OIL_TOKEN: INVALID });
   assert.equal(result.code, 3);
-  assert.match(result.stderr, /登录已失效，重新运行 oil login/);
+  assert.match(result.stderr, /登录已失效，请重新运行 npx github:oil-oil\/oil-cli login/);
   result = await f.run(['update', 'oil-doc-pro', '--yes', '--json'], { OIL_TOKEN: INACTIVE });
   assert.equal(result.code, 3);
-  assert.equal(data(result).subscribe_command, 'oil subscribe oil-doc-pro');
+  assert.equal(data(result).subscribe_command, 'npx github:oil-oil/oil-cli subscribe oil-doc-pro');
   assert.equal(data(result).subscription_url, `${f.base}/store/oil-doc-pro/`);
   assert.deepEqual(await snapshot(directory), before);
 });
@@ -446,7 +446,7 @@ test('subscribe 交互询问并安装；已解锁 409 可继续，免费和未�
   const f = await fixture(t);
   let result = await f.run(['subscribe', 'oil-ui-pro'], { OIL_TOKEN: INACTIVE }, { terminal: true, interactive: true, answers: [true, 'agents', true] });
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /已安装 oil-ui-pro/);
+  assert.match(result.stdout, /已安装 Oil UI Pro/);
   assert.equal(result.trace.questions.length, 3);
   f.state.checkoutAlreadyActive = true;
   f.state.grants.set(INACTIVE, []);

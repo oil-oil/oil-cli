@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 import { createInterface } from 'node:readline/promises';
 
 export class CliError extends Error {
@@ -27,7 +28,7 @@ export class Output {
     let result = value;
     for (const secret of [...this.secrets].sort((a, b) => b.length - a.length)) {
       for (const form of new Set([secret, encodeURIComponent(secret)])) {
-        result = result.replaceAll(form, this.hiddenSecrets.has(secret) ? '[已隐藏]' : `${secret.slice(0, 8)}…`);
+        result = result.replaceAll(form, this.hiddenSecrets.has(secret) ? t('hidden') : `${secret.slice(0, 8)}…`);
       }
     }
     return result.replace(/oil_[A-Za-z0-9]+…?/g, (token) => `${token.slice(0, 8).replace(/…$/, '')}…`);
@@ -46,8 +47,8 @@ export class Output {
   }
   fail(error) {
     const known = error instanceof CliError;
-    this.write({ error: known ? error.error : 'failed', message: known ? error.message : '操作失败，请检查网络和目录权限。', ...(known ? error.details : {}) },
-      [known ? error.message : '操作失败，请检查网络和目录权限。', ...(error.details?.recovery_paths || []).map((p) => `原目录保留在：${p}`)], false);
+    this.write({ error: known ? error.error : 'failed', message: known ? error.message : t('failed'), ...(known ? error.details : {}) },
+      [known ? error.message : t('failed'), ...(error.details?.recovery_paths || []).map((p) => t('recovery', { path: p }))], false);
     return known ? error.code : 1;
   }
 }

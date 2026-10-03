@@ -42,7 +42,7 @@ export async function fixture(t) {
   for (const directory of [home, cwd, config, mockBin]) await mkdir(directory);
   // 完全替代系统浏览器命令；手动验收时这个脚本向假服务模拟浏览器允许。
   for (const name of ['open', 'xdg-open', 'cmd.exe']) {
-    await writeFile(path.join(mockBin, name), `#!${process.execPath}\nif (process.env.OIL_TEST_BROWSER !== 'approve') process.exit(1);\nconst url = new URL(process.argv.at(-1));\nif (url.pathname === '/device/') {\nconst response = await fetch(new URL('/api/cli/device/approve', url), {method: 'POST', headers: {'Content-Type': 'application/json', Cookie: 'oil_session=fake'}, body: JSON.stringify({user_code: url.searchParams.get('code'), approve: true})});\nif (!response.ok) process.exit(1);\n}\n`, { mode: 0o755 });
+    await writeFile(path.join(mockBin, name), `#!${process.execPath}\nif (process.env.OIL_TEST_BROWSER !== 'approve') process.exit(1);\nconst url = new URL(process.argv.at(-1));\nif (url.pathname.endsWith('/device/')) {\nconst response = await fetch(new URL('/api/cli/device/approve', url), {method: 'POST', headers: {'Content-Type': 'application/json', Cookie: 'oil_session=fake'}, body: JSON.stringify({user_code: url.searchParams.get('code'), approve: true})});\nif (!response.ok) process.exit(1);\n}\n`, { mode: 0o755 });
     // 浏览器脚本没有 .mjs 后缀，使用异步函数兼容 Node 18 的 CommonJS 入口。
     const file = path.join(mockBin, name);
     const script = await readFile(file, 'utf8');
@@ -55,6 +55,7 @@ export async function fixture(t) {
   const state = { catalog: structuredClone(CATALOG), latest: '0.10.0', badChecksum: false, missingChecksum: false, proBadChecksum: false, paidMissingChecksum: false,
     deviceStatuses: ['authorization_pending', 'success'], devicePolls: 0, deviceRequests: 0, interval: 5, expiresIn: 600, deviceApproved: false, requireApproval: false,
     checkoutPolls: 0, checkoutRequests: 0, checkoutActiveAfter: 2, checkoutAlreadyActive: false, downloadInactiveCount: 0,
+    checkoutStatusPolls: 0, checkoutStatusActiveAfter: Infinity, checkoutCreated: 0, sessions: new Map(),
     logoutFailure: false, requests: [], revoked: new Set(), grants: new Map() };
   let base;
   const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
@@ -75,12 +76,13 @@ export async function fixture(t) {
       for await (const chunk of req) text += chunk;
       const body = text ? JSON.parse(text) : null;
       const token = req.headers.authorization?.replace(/^Bearer /, '');
-      state.requests.push({ method: req.method, path: url.pathname, query: url.searchParams, token, body });
+      const english = req.headers['accept-language'] === 'en';
+      state.requests.push({ method: req.method, path: url.pathname, query: url.searchParams, token, body, headers: req.headers });
       const valid = [TOKEN, INACTIVE].includes(token) && !state.revoked.has(token);
       const authenticate = () => { if (!valid) { error(res, 401, 'unauthorized', `令牌无效：${token || ''}`); return false; } return true; };
-      if (req.method === 'GET' && url.pathname === '/api/store/catalog') return json(res, 200, { products: state.catalog });
+      if (req.method === 'GET' && url.pathname === '/api/store/catalog') return json(res, 200, { products: state.catalog.map((p) => ({ ...p, summary: english ? 'Help with your work.' : p.summary })) });
       if (req.method === 'GET' && url.pathname === '/api/store/versions') {
-        const history = [state.latest, ...(state.latest === '0.11.0' ? ['0.10.0'] : []), '0.9.0', '0.8.0'].map((version) => ({ version, published_at: '2026-10-02T08:00:00Z', notes: `${version}：改善布局和交互。` }));
+        const history = [state.latest, ...(state.latest === '0.11.0' ? ['0.10.0'] : []), '0.9.0', '0.8.0'].map((version) => ({ version, published_at: '2026-10-02T08:00:00Z', notes: english ? `${version}: Improve layout and interactions.` : `${version}：改善布局和交互。` }));
         const skills = {};
         for (const product of state.catalog) for (const type of ['free', 'paid']) {
           const name = typeof product[type] === 'string' ? product[type] : product[type]?.skill;
@@ -122,7 +124,8 @@ export async function fixture(t) {
         const suffix = state.deviceRequests === 1 ? '' : `_${state.deviceRequests}`;
         state.deviceCode = `device_secret_0123456789${suffix}`;
         state.userCode = `KDQW-7RTF${suffix}`;
-        return json(res, 200, { device_code: state.deviceCode, user_code: state.userCode, verification_uri: `${base}/device/`, verification_uri_complete: `${base}/device/?code=${state.userCode}`, expires_in: state.expiresIn, interval: state.interval });
+        const devicePath = body.lang ? `/${body.lang}/device/` : '/device/';
+        return json(res, 200, { device_code: state.deviceCode, user_code: state.userCode, verification_uri: `${base}${devicePath}`, verification_uri_complete: `${base}${devicePath}?code=${state.userCode}`, expires_in: state.expiresIn, interval: state.interval });
       }
       if (req.method === 'POST' && url.pathname === '/api/cli/device/approve') {
         if (req.headers.cookie !== 'oil_session=fake' || body.user_code !== state.userCode) return error(res, 403, 'forbidden', '确认失败。');
@@ -157,8 +160,34 @@ export async function fixture(t) {
         }
         state.checkoutToken = token;
         state.checkoutSkill = body.skill;
+        const plan = body.plan || state.catalog.find((p) => p.paid?.skill === body.skill)?.offer?.[0] || 'lifetime';
+        const own = [...state.sessions.values()].filter((s) => s.token === token && s.skill === body.skill);
+        if (own.some((s) => s.paid)) {
+          state.grants.set(token, [...new Set([...(state.grants.get(token) || []), body.skill])]);
+          for (const s of own) if (s.status === 'open' && !s.paid) s.status = 'expired';
+          return error(res, 409, 'already_active', english ? 'Already purchased.' : '已经解锁。');
+        }
+        const reused = own.find((s) => s.status === 'open' && s.plan === plan);
+        if (reused) return json(res, 200, { id: reused.id, url: reused.url, reused: true });
         state.checkoutPolls = 0;
-        return json(res, 200, { url: state.checkoutUrl ?? `${base}/checkout?session=${state.checkoutRequests}` });
+        const id = `cs_test_${++state.checkoutCreated}`;
+        const session = { id, url: state.checkoutUrl ?? `${base}/checkout?session=${state.checkoutCreated}`, token, skill: body.skill, plan, status: 'open', paid: false };
+        state.sessions.set(id, session);
+        return json(res, 200, state.checkoutResponse ?? { id, url: session.url, reused: false });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/store/checkout/status') {
+        if (!authenticate()) return;
+        const session = state.sessions.get(url.searchParams.get('id'));
+        if (!session) return error(res, 404, 'not_found', english ? 'Session not found.' : '没有这个会话。');
+        if (session.token !== token) return error(res, 403, 'access_denied', english ? 'Access denied.' : '无权查询。');
+        state.checkoutStatusPolls++;
+        if (state.checkoutStatusErrors?.[state.checkoutStatusPolls - 1]) return error(res, 502, 'upstream', english ? 'Service unavailable.' : '服务连接失败');
+        if (state.checkoutStatusPolls >= state.checkoutStatusActiveAfter && session.status === 'open') { session.paid = true; session.status = 'complete'; }
+        if (session.paid && !state.fulfillmentPending) {
+          state.grants.set(token, [...new Set([...(state.grants.get(token) || []), session.skill])]);
+          for (const other of state.sessions.values()) if (other.id !== session.id && other.token === token && other.skill === session.skill && other.status === 'open') other.status = 'expired';
+        }
+        return json(res, 200, state.checkoutStatusResponse ?? { status: session.status, paid: session.paid, entitled: subscriptions(token).some((s) => s.skill === session.skill) });
       }
       if (req.method === 'POST' && url.pathname === '/api/account/portal') {
         if (!authenticate()) return;
@@ -175,7 +204,7 @@ export async function fixture(t) {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${server.address().port}`;
-  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: config, APPDATA: config, OIL_API: base, OIL_TOKEN: '', CI: '', OIL_TEST_BROWSER: '', PATH: `${mockBin}${path.delimiter}${process.env.PATH || ''}` };
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: config, APPDATA: config, CODEX_HOME: '', OIL_LANG: '', LC_ALL: 'C', LC_MESSAGES: '', LANG: '', OIL_API: base, OIL_TOKEN: '', CI: '', OIL_TEST_BROWSER: '', PATH: `${mockBin}${path.delimiter}${process.env.PATH || ''}` };
   const configFile = path.join(config, 'oil', 'config.json');
   let runNumber = 0;
   const run = (args, extraEnv = {}, runtime = {}) => new Promise((resolve, reject) => {
@@ -185,6 +214,7 @@ export async function fixture(t) {
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
       if (runtime.killOnDevice && (stdout.includes('授权码：') || stdout.includes('"event":"device"'))) child.kill('SIGKILL');
+      if (runtime.killOnCheckout && (stdout.includes('付款页面：') || stdout.includes('"event":"checkout"'))) child.kill('SIGKILL');
     });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.stdin.end();

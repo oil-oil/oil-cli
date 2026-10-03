@@ -13,6 +13,8 @@ npx github:oil-oil/oil-cli status            # 查看版本和账号
 npx github:oil-oil/oil-cli help              # 全部命令
 ```
 
+输出语言跟随系统，也可以用 `--lang zh` 或 `--lang en` 指定。Codex 的安装位置跟随 `CODEX_HOME`。
+
 ## 许可
 
 [MIT](LICENSE)

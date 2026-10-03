@@ -78,7 +78,7 @@ test('非交互付费安装默认移除免费版并说明；update 不需要 --y
   const free = await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-ui', '0.8.0', 'custom-free');
   let result = await f.run(['install', 'oil-ui-pro'], { OIL_TOKEN: TOKEN });
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /已移除同位置的免费版：/);
+  assert.match(result.stdout, /已移除同位置的开源版：/);
   await absent(free);
   f.state.latest = '0.11.0';
   result = await f.run(['update', '--json'], { OIL_TOKEN: TOKEN });
@@ -95,7 +95,7 @@ test('交互移除免费版默认是，用户可选择保留；--yes 跳过确�
   assert.equal(result.code, 0);
   await access(free);
   assert.equal(result.trace.questions.length, 2);
-  assert.match(result.trace.questions[1], /免费版.*\[Y\/n\]/);
+  assert.match(result.trace.questions[1], /开源版.*\[Y\/n\]/);
   result = await f.run(['install', 'oil-ui-pro'], { OIL_TOKEN: TOKEN }, { interactive: true, answers: ['', ''] });
   assert.equal(result.code, 0);
   await absent(free);
@@ -163,7 +163,7 @@ test('交互订阅可以拒绝安装；无 Agent 的非交互订阅生效后提�
   const f = await fixture(t);
   let result = await f.run(['subscribe', 'oil-ui-pro'], { OIL_TOKEN: INACTIVE }, { interactive: true, answers: ['n'] });
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /以后安装：oil install oil-ui-pro/);
+  assert.match(result.stdout, /以后安装：npx github:oil-oil\/oil-cli install oil-ui-pro/);
   await absent(path.join(f.home, '.codex'));
   result = await f.run(['subscribe', 'oil-doc-pro', '--json'], { OIL_TOKEN: INACTIVE });
   assert.equal(result.code, 2);
@@ -278,7 +278,7 @@ test('订阅 plan 用中文、日期用本地 YYYY-MM-DD；JSON 保留服务端�
   assert.equal(result.code, 0);
   assert.match(result.stdout, /月费：有效（每月），续费 2026-11-02/);
   assert.match(result.stdout, /年费：已取消，到期前可用（每年），到期 2026-11-02/);
-  assert.match(result.stdout, /买断：永久解锁（永久）/);
+  assert.match(result.stdout, /买断：已买断，永久更新/);
   assert(!result.stdout.includes('T00:30:00'));
   const json = data(await f.run(['status', '--json'], { OIL_TOKEN: TOKEN }));
   assert.equal(json.account.subscriptions[0].plan, 'monthly');
@@ -290,7 +290,7 @@ test('install 覆盖旧版本显示已更新和前后版本，JSON 带 previous'
   await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-ui', '0.8.0');
   let result = await f.run(['install', 'oil-ui']);
   assert.equal(result.code, 0);
-  assert.match(result.stdout, /已更新 oil-ui：0\.8\.0 → 0\.10\.0/);
+  assert.match(result.stdout, /已更新 Oil UI 开源版：0\.8\.0 → 0\.10\.0/);
   f.state.latest = '0.11.0';
   result = await f.run(['install', 'oil-ui', '--json']);
   assert.equal(result.code, 0);
@@ -326,8 +326,8 @@ test('一句安装命令的真实入口：非交互设备码登录后自动安�
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /授权码：KDQW-7RTF/);
   assert.match(result.stdout, /已登录：test@example.com/);
-  assert.match(result.stdout, /已安装 oil-ui-pro/);
-  assert.match(result.stdout, /已移除同位置的免费版/);
+  assert.match(result.stdout, /已安装 Oil UI Pro/);
+  assert.match(result.stdout, /已移除同位置的开源版/);
   assert(f.state.deviceApproved);
   await absent(free);
   assert.match(await readFile(path.join(root, 'oil-ui-pro', 'SKILL.md'), 'utf8'), /0\.10\.0/);

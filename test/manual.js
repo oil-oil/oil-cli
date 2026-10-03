@@ -1,32 +1,42 @@
 import path from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
-import { fixture, writeSkill } from './fixture.js';
+import { fixture, writeSkill, INACTIVE } from './fixture.js';
 
-const f = await fixture();
-try {
-  f.state.requireApproval = true;
-  await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-ui', '0.8.0');
-  const development = await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-doc-pro', '0.8.0');
-  await mkdir(path.join(development, '.git'));
-  const paid = path.join(f.home, '.codex', 'skills', 'oil-ui-pro');
-  for (const args of [
-    ['login'],
-    ['status'],
-    ['list'],
-    ['install', 'oil-ui-pro'],
-    ['update'],
-    ['update', '--path', paid],
-    ['logout'],
-  ]) {
-    if (args[0] === 'update') f.state.latest = '0.11.0';
-    process.stdout.write(`$ oil ${args.join(' ').replaceAll(f.temporary, '<临时目录>')}\n`);
-    const result = await f.run(args, { OIL_TEST_BROWSER: 'approve' }, { real: true });
-    // 报告保留输出内容，将每次运行不同的临时路径、端口统一为可读占位符。
-    const output = (result.stdout + result.stderr).replaceAll(f.temporary, '<临时目录>').replaceAll(f.base, '<假服务>');
-    process.stdout.write(output + `退出码：${result.code}\n\n`);
-    if (result.code !== 0) throw new Error('手动运行失败');
-  }
-  if (!f.state.deviceApproved) throw new Error('模拟浏览器未允许登录');
-  if (!(await readFile(path.join(development, 'SKILL.md'), 'utf8')).includes('0.8.0')) throw new Error('开发目录被改动');
-  process.stdout.write('核对：浏览器脚本已允许设备码，logout 已撤销令牌，开发目录已保留；所有读写均在临时目录。\n');
-} finally { await f.close(); }
+// 真实入口和时钟，仅服务、浏览器和用户目录使用本地夹具。
+for (const lang of ['zh', 'en']) {
+  const f = await fixture();
+  try {
+    f.state.requireApproval = true;
+    f.state.deviceToken = INACTIVE;
+    const codexHome = path.join(f.home, 'custom-codex');
+    await writeSkill(path.join(codexHome, 'skills'), 'oil-ui', '0.8.0');
+    const development = await writeSkill(path.join(codexHome, 'skills'), 'oil-doc-pro', '0.8.0');
+    await mkdir(path.join(development, '.git'));
+    const paid = path.join(codexHome, 'skills', 'oil-ui-pro');
+    const env = { OIL_LANG: lang, CODEX_HOME: codexHome, OIL_TEST_BROWSER: 'approve' };
+    for (const args of [
+      ['help'],
+      ['install', 'oil-ui', '--to', 'agents'],
+      ['login'],
+      ['status'],
+      ['list'],
+      ['install', 'oil-ui-pro'],
+      ['status'],
+      ['update'],
+      ['update', '--path', paid],
+      ['logout'],
+    ]) {
+      if (args[0] === 'update') f.state.latest = '0.11.0';
+      process.stdout.write(`$ OIL_LANG=${lang} npx github:oil-oil/oil-cli ${args.join(' ').replaceAll(f.temporary, '<temp>')}\n`);
+      const result = await f.run(args, env, { real: true });
+      const output = (result.stdout + result.stderr).replaceAll(f.temporary, '<temp>').replaceAll(f.base, '<fixture>');
+      process.stdout.write(output + `exit=${result.code}\n\n`);
+      if (result.code !== 0) throw new Error(`Manual command failed: ${args[0]}`);
+      if (lang === 'en' && /\p{Script=Han}/u.test(output)) throw new Error('Chinese text in English output');
+      if (/重启|新开对话|restart|new conversation/i.test(output)) throw new Error('Unexpected restart hint');
+    }
+    if (!f.state.deviceApproved) throw new Error('Browser did not approve sign-in');
+    if (!(await readFile(path.join(development, 'SKILL.md'), 'utf8')).includes('0.8.0')) throw new Error('Development directory changed');
+    process.stdout.write(`Verified ${lang}: temporary HOME, CODEX_HOME, browser sign-in, purchase, install, status, update, logout; development files preserved.\n\n`);
+  } finally { await f.close(); }
+}

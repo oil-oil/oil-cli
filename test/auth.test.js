@@ -109,7 +109,7 @@ test('真实 CLI 在设备码显示后被杀掉，浏览器随后允许，下一
   const second = await f.run(args, {}, { real: true });
   assert.equal(second.code, 0, second.stderr);
   assert.equal(f.state.deviceRequests, 1);
-  assert.match(second.stdout, /已安装 oil-ui-pro/);
+  assert.match(second.stdout, /已安装 Oil UI Pro/);
   assert(second.stdout.includes(`授权码：${pending.user_code}`));
   assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL, api: f.base });
   noDeviceSecret(first, pending.device_code);

@@ -13,6 +13,8 @@ npx github:oil-oil/oil-cli status            # Show versions and account info
 npx github:oil-oil/oil-cli help              # List all commands
 ```
 
+Output follows your system language; use `--lang zh` or `--lang en` to choose one. Codex installs follow `CODEX_HOME`.
+
 ## License
 
 [MIT](LICENSE)

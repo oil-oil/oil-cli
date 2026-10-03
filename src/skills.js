@@ -1,3 +1,4 @@
+import { t, skillLabel } from './i18n.js';
 import { lstat, stat, realpath, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { homedir } from 'node:os';
@@ -88,7 +89,7 @@ export async function isDevelopmentDirectory(directory) {
     return await containsGit(resolved);
   } catch (error) {
     if (['ENOENT', 'ENOTDIR'].includes(error.code)) return false;
-    throw new CliError(`无法检查开发目录：${directory}`, 1, 'skill_read');
+    throw new CliError(t('developmentRead', { path: directory }), 1, 'skill_read');
   }
 }
 
@@ -103,7 +104,7 @@ export async function inspectSkill(directory, names) {
   } catch (error) {
     if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
     if (error instanceof CliError) throw error;
-    throw new CliError(`无法读取 Skill 目录：${directory}`, 1, 'skill_read');
+    throw new CliError(t('skillRead', { path: directory }), 1, 'skill_read');
   }
 }
 
@@ -128,15 +129,14 @@ export async function uniqueDirectories(directories) {
 
 // 安装目标只检测用户的 Agent 目录，不把当前项目的目录当作默认目标。
 export async function installationRoots() {
-  const home = process.env.HOME || homedir();
   const roots = [];
   for (const agent of ['claude', 'codex', 'cursor', 'agents']) {
-    const directory = path.join(home, `.${agent}`);
-    const root = path.join(directory, 'skills');
+    const root = targetRoot(agent);
+    const directory = path.dirname(root);
     try {
       if ((await stat(agent === 'agents' ? root : directory)).isDirectory()) roots.push(root);
     } catch (error) {
-      if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw new CliError(`无法检测 Agent 目录：${directory}`, 1, 'skill_read');
+      if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw new CliError(t('agentRead', { path: directory }), 1, 'skill_read');
     }
   }
   return roots;
@@ -150,15 +150,15 @@ export function resolveDirectory(value) {
 }
 
 export function discoveryRoots() {
-  const home = process.env.HOME || homedir();
   return [...new Set([
-    ...['claude', 'codex', 'agents', 'cursor'].map((agent) => path.join(home, `.${agent}`, 'skills')),
+    ...['claude', 'codex', 'agents', 'cursor'].map(targetRoot),
     ...['claude', 'agents', 'codex'].map((agent) => path.resolve(`.${agent}`, 'skills')),
   ])];
 }
 
 export function targetRoot(value) {
   const home = process.env.HOME || homedir();
+  if (value === 'codex' && process.env.CODEX_HOME) return path.join(resolveDirectory(process.env.CODEX_HOME), 'skills');
   if (['claude', 'codex', 'agents', 'cursor'].includes(value)) return path.join(home, `.${value}`, 'skills');
   return resolveDirectory(value);
 }
@@ -169,8 +169,8 @@ export async function scan(names, roots = discoveryRoots()) {
     let entries;
     try { entries = await readdir(root, { withFileTypes: true }); }
     catch (error) {
-      if (error.code === 'ENOENT') continue;
-      throw new CliError(`无法扫描目录：${root}`, 1, 'skill_read');
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue;
+      throw new CliError(t('scanRead', { path: root }), 1, 'skill_read');
     }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
@@ -197,5 +197,5 @@ export function conflicts(installed, catalog) {
   return catalog.filter((product) => product.free && product.paid).flatMap((product) =>
     [...new Set(installed.map((i) => i.root))]
       .filter((root) => [product.free.skill, product.paid.skill].every((name) => installed.some((i) => i.root === root && i.name === name)))
-      .map((root) => `${root}：${product.free.skill} 和 ${product.paid.skill} 两个版本同时装会抢着接同一类请求`));
+      .map((root) => t('conflict', { prefix: `${root}: `, free: skillLabel(product.free.skill), paid: skillLabel(product.paid.skill) })));
 }

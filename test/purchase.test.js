@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { access, mkdir, readFile } from 'node:fs/promises';
+import { access, mkdir, readFile, stat } from 'node:fs/promises';
 import { fixture, writeSkill, snapshot, TOKEN, INACTIVE, EMAIL } from './fixture.js';
 
 const events = (result) => {
@@ -62,14 +62,18 @@ test('非交互付款最多等 60 秒，退出 3，JSON 给出付款链接与原
   assert.equal(pending.skill, 'oil-ui-pro');
   assert.equal(pending.url, checkout.url);
   assert.equal(pending.purchase_url, checkout.url);
-  assert.equal(pending.message, `在浏览器打开 ${checkout.url} 完成付款，然后再运行一次刚才的命令。`);
+  assert.equal(pending.message, `请用户在浏览器打开 ${checkout.url} 完成付款，付完后再运行一次刚才的命令。重新运行会沿用这个付款页面，不会重复收费。`);
   assert.equal(pending.next_command, 'npx github:oil-oil/oil-cli install oil-ui-pro --to codex --yes --json');
   assert.equal(totalWait(result), 60000);
   assert.deepEqual(result.trace.delays, Array(20).fill(3000));
   assert.equal(f.state.checkoutPolls, 19);
   assert(!f.state.requests.some((r) => r.path.startsWith('/api/store/download/')));
   assert.deepEqual(await snapshot(root), before);
-  await absent(f.configFile);
+  const saved = JSON.parse(await readFile(f.configFile, 'utf8'));
+  assert.equal(saved.pending_checkout.id, checkout.id);
+  assert.equal(saved.pending_checkout.url, checkout.url);
+  assert.equal(saved.token, undefined);
+  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
 });
 
 test('非交互付款超时的普通输出包含付款链接和指定重跑提示', async (t) => {
@@ -81,7 +85,7 @@ test('非交互付款超时的普通输出包含付款链接和指定重跑提�
   const url = `${f.base}/checkout?session=1`;
   assert(result.stdout.includes(`付款页面：${url}`));
   assert.match(result.stdout, /最长等待 60 秒/);
-  assert.equal(result.stderr.trim(), `在浏览器打开 ${url} 完成付款，然后再运行一次刚才的命令。`);
+  assert.equal(result.stderr.trim(), `请用户在浏览器打开 ${url} 完成付款，付完后再运行一次刚才的命令。重新运行会沿用这个付款页面，不会重复收费。`);
   assert.equal(totalWait(result), 60000);
 });
 
@@ -107,7 +111,7 @@ test('超时后付款，第二次运行同一命令直接安装，不创建付�
   assert(!f.state.requests.slice(offset).some((r) => r.path === '/api/store/checkout'));
 });
 
-test('超时后仍未付款，重跑重新创建付款链接，不保存付款会话', async (t) => {
+test('超时后仍未付款，保存并复用付款会话，重跑不创建新链接', async (t) => {
   const f = await fixture(t);
   f.state.checkoutActiveAfter = Infinity;
   await mkdir(path.join(f.home, '.codex'));
@@ -115,11 +119,18 @@ test('超时后仍未付款，重跑重新创建付款链接，不保存付款�
   const second = await f.run(installArgs, { OIL_TOKEN: INACTIVE });
   assert.equal(first.code, 3);
   assert.equal(second.code, 3);
-  assert.notEqual(events(first).at(-1).url, events(second).at(-1).url);
-  assert.equal(f.state.checkoutRequests, 2);
+  assert.equal(events(first).at(-1).url, events(second).at(-1).url);
+  assert.equal(events(second)[0].reused, true);
+  assert.equal(events(second)[0].resumed, true);
+  assert.equal(f.state.checkoutRequests, 1);
+  assert.equal(f.state.checkoutCreated, 1);
   assert.equal(totalWait(second), 60000);
   assert.deepEqual(second.trace.browserUrls, [events(second)[0].url]);
-  await absent(f.configFile);
+  const saved = JSON.parse(await readFile(f.configFile, 'utf8'));
+  assert.equal(saved.pending_checkout.id, events(first)[0].id);
+  assert.equal(saved.pending_checkout.url, events(first)[0].url);
+  assert.equal(saved.token, undefined);
+  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
   await absent(path.join(f.home, '.codex', 'skills', 'oil-ui-pro'));
 });
 
@@ -219,11 +230,11 @@ test('打开付款浏览器也计入非交互 60 秒预算，轮询 5xx 可恢�
   assert.equal(timedOut.code, 3);
   assert.deepEqual(timedOut.trace.browserTimeouts, [5000]);
   assert.equal(totalWait(timedOut) + timedOut.trace.browserTimeouts[0], 60000);
-  f.state.checkoutToken = null;
-  f.state.checkoutActiveAfter = 3;
-  f.state.checkoutPollErrors = [true, false, false];
+  f.state.checkoutPolls = 0;
+  f.state.checkoutActiveAfter = 4;
+  f.state.checkoutPollErrors = [false, true, false, false];
   const result = await f.run(installArgs, { OIL_TOKEN: INACTIVE });
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(result.trace.delays, [3000, 3000, 3000]);
-  assert.equal(f.state.checkoutPolls, 3);
+  assert.equal(f.state.checkoutPolls, 4);
 });
