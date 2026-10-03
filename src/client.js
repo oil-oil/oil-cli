@@ -33,14 +33,23 @@ export const findSkill = (catalog, name) => {
   return { product, paid: product.paid?.skill === name };
 };
 
+export const DEFAULT_API = 'https://ui.oiloil.org';
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+// 接口地址：只允许 HTTPS，HTTP 只留给本机调试，免得令牌明文发出去
+export function apiBase(env = process.env) {
+  let url;
+  try {
+    url = new URL(env.OIL_API || DEFAULT_API);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
+  } catch { throw new CliError('OIL_API 必须是 HTTP 或 HTTPS 基础地址。', 2, 'invalid_api'); }
+  if (url.protocol === 'http:' && !LOCAL_HOSTS.has(url.hostname)) throw new CliError('OIL_API 必须使用 HTTPS（本机地址除外）。', 2, 'invalid_api');
+  return url.href.replace(/\/$/, '');
+}
+
 export class Client {
   constructor(signal = new AbortController().signal) {
-    const base = process.env.OIL_API || 'https://ui.oiloil.org';
-    try {
-      const url = new URL(base);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
-      this.base = url.href.replace(/\/$/, '');
-    } catch { throw new CliError('OIL_API 必须是 HTTP 或 HTTPS 基础地址。', 2, 'invalid_api'); }
+    this.base = apiBase();
     this.signal = signal;
   }
   url(route) { return `${this.base}${route}`; }

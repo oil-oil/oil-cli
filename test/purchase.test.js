@@ -38,7 +38,7 @@ test('同一条安装命令完成登录 → 未买目标 Skill → 打开付款�
   assert(f.state.requests.every((r) => !r.query.has('token')));
   assert(!result.stdout.includes(INACTIVE));
   assert(!result.stdout.includes('device_secret_0123456789'));
-  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: INACTIVE, email: EMAIL });
+  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: INACTIVE, email: EMAIL, api: f.base });
   assert.match(await readFile(path.join(root, 'oil-ui-pro', 'SKILL.md'), 'utf8'), /version: "0\.10\.0"/);
   assert.deepEqual(output.at(-1).removed, [free]);
   await absent(free);

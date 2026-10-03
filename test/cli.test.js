@@ -144,12 +144,12 @@ test('login --token 校验后保存权限 600；无效令牌不覆盖配置，�
   const value = data(result);
   assert.equal(value.token, `${TOKEN.slice(0, 8)}…`);
   assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
-  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com' });
+  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com', api: f.base });
   const invalid = await f.run(['login', '--token', INVALID]);
   assert.equal(invalid.code, 3);
   assert(!invalid.stderr.includes(INVALID));
   assert.match(invalid.stderr, /登录已失效，重新运行 oil login/);
-  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com' });
+  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com', api: f.base });
   const status = await f.run(['status', '--json']);
   assert.equal(status.code, 0);
   assert.equal(data(status).account.subscriptions[0].status, 'lifetime');
@@ -320,7 +320,7 @@ test('设备码 pending、slow_down、成功按 interval 轮询；JSON Lines 不
   assert.equal(typeof request.body.client_name, 'string');
   assert.equal(request.body.platform, process.platform);
   assert.equal(request.token, undefined);
-  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com' });
+  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com', api: f.base });
 });
 
 test('登录轮询遇到服务端 5xx 继续等待，不中断', async (t) => {
@@ -523,7 +523,7 @@ test('免费 list/install/update 不依赖账号配置；令牌登录可修复�
   assert.equal(await readFile(f.configFile, 'utf8'), '{broken');
   const result = await f.run(['login', '--token', TOKEN, '--json']);
   assert.equal(result.code, 0);
-  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com' });
+  assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com', api: f.base });
   assert(!result.stdout.includes(TOKEN));
   assert(f.state.requests.filter((r) => r.path.startsWith('/api/store/download/')).every((r) => r.token === undefined));
 });

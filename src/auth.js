@@ -96,7 +96,7 @@ export async function login(ctx, suppliedToken) {
     ({ token, email } = await deviceLogin(ctx));
   }
   ctx.output.remember(token);
-  const file = await saveAuth(token, email);
+  const file = await saveAuth(token, email, ctx.client.base);
   const warnings = process.env.OIL_TOKEN && process.env.OIL_TOKEN !== token ? ['OIL_TOKEN 优先于本机配置；使用新保存的令牌时请取消该环境变量。'] : [];
   ctx.token = token;
   ctx.output.write({ event: 'login', status: 'complete', token, email, config: file, warnings }, [`已登录：${email}`, `已保存令牌：${token}`, ...warnings]);
@@ -105,7 +105,7 @@ export async function login(ctx, suppliedToken) {
 
 export async function loadAuth(ctx) {
   if (ctx.authLoaded) return;
-  ctx.token = (await readAuth())?.token;
+  ctx.token = (await readAuth(ctx.client.base))?.token;
   ctx.output.remember(ctx.token);
   ctx.authLoaded = true;
 }

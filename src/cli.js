@@ -251,7 +251,7 @@ async function logout(ctx) {
   const warnings = [];
   let revoked = false, token;
   try {
-    token = (await readAuth())?.token;
+    token = (await readAuth(ctx.client.base))?.token;
     ctx.output.remember(token);
     if (token) { await ctx.client.request('/api/cli/logout', { method: 'POST', token }); revoked = true; }
   } catch (error) {

@@ -83,7 +83,7 @@ test('第二次运行领取同一设备码，保存令牌、清掉待领取记�
   assert.equal(output[0].user_code, pending.user_code);
   assert.equal(f.state.deviceRequests, 1);
   assert(f.state.requests.filter((request) => request.path === '/api/cli/token').every((request) => request.body.device_code === pending.device_code));
-  assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL });
+  assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL, api: f.base });
   assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
   assert.match(await readFile(path.join(root, 'oil-ui-pro', 'SKILL.md'), 'utf8'), /name: oil-ui-pro/);
   await assert.rejects(access(free), { code: 'ENOENT' });
@@ -111,7 +111,7 @@ test('真实 CLI 在设备码显示后被杀掉，浏览器随后允许，下一
   assert.equal(f.state.deviceRequests, 1);
   assert.match(second.stdout, /已安装 oil-ui-pro/);
   assert(second.stdout.includes(`授权码：${pending.user_code}`));
-  assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL });
+  assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL, api: f.base });
   noDeviceSecret(first, pending.device_code);
   noDeviceSecret(second, pending.device_code);
 });
@@ -131,7 +131,7 @@ test('本机已有令牌时也先完成待领取登录；OIL_TOKEN 仍优先', a
   assert.equal(result.code, 0);
   assert.equal(events(result)[0].user_code, pending.user_code);
   assert.equal(f.state.deviceRequests, 1);
-  assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL });
+  assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL, api: f.base });
 });
 
 test('update、subscribe、manage 也优先领取待授权设备码并继续原命令', async (t) => {
@@ -151,7 +151,7 @@ test('update、subscribe、manage 也优先领取待授权设备码并继续原�
       assert.equal(result.code, 0, result.stdout);
       assert.equal(events(result)[0].user_code, pending.user_code);
       assert.equal(f.state.deviceRequests, 1);
-      assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL });
+      assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL, api: f.base });
       noDeviceSecret(result, pending.device_code);
     });
   }
@@ -201,7 +201,7 @@ test('本机记录已到期时直接清掉并换新，不轮询旧设备码', as
   const requests = f.state.requests.slice(offset);
   assert.equal(requests[0].path, '/api/cli/device');
   assert(requests.filter((request) => request.path === '/api/cli/token').every((request) => request.body.device_code !== old.device_code));
-  assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL });
+  assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL, api: f.base });
   noDeviceSecret(result, old.device_code);
   noDeviceSecret(result, f.state.deviceCode);
 });

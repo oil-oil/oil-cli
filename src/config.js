@@ -24,6 +24,7 @@ async function readConfig() {
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('invalid config');
     const hasAuth = data.token !== undefined || data.email !== undefined;
     if (hasAuth && (typeof data.token !== 'string' || !data.token || typeof data.email !== 'string' || !data.email)) throw new Error('invalid config');
+    if (data.api !== undefined && typeof data.api !== 'string') throw new Error('invalid config');
     if (data.pending_device !== undefined && !isPendingDevice(data.pending_device)) throw new Error('invalid config');
     if (!hasAuth && !data.pending_device) throw new Error('invalid config');
     await chmod(file, 0o600);
@@ -34,10 +35,16 @@ async function readConfig() {
   }
 }
 
-export async function readAuth() {
+const origin = (value) => { try { return new URL(value).origin; } catch { return null; } };
+
+// 保存的令牌只发给签发它的服务器：OIL_API 指向别处时当作没有登录。
+// 旧配置没有记录服务器，视为默认的 ui.oiloil.org。OIL_TOKEN 是用户显式提供的，不受限制。
+export async function readAuth(api) {
   if (process.env.OIL_TOKEN) return { token: process.env.OIL_TOKEN, email: null };
   const data = await readConfig();
-  return data?.token ? { token: data.token, email: data.email } : null;
+  if (!data?.token) return null;
+  if (origin(data.api || 'https://ui.oiloil.org') !== origin(api)) return null;
+  return { token: data.token, email: data.email };
 }
 
 export async function readPendingDevice() {
@@ -67,8 +74,8 @@ async function saveConfig(data) {
 }
 
 // 保存令牌时一并清除待领取记录；显式令牌登录也可修复坏配置。
-export async function saveAuth(token, email) {
-  return await saveConfig({ token, email });
+export async function saveAuth(token, email, api) {
+  return await saveConfig({ token, email, api });
 }
 
 export async function savePendingDevice(device) {
