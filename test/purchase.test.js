@@ -122,7 +122,7 @@ test('超时后仍未付款，保存并复用付款会话，重跑不创建新�
   assert.equal(events(first).at(-1).url, events(second).at(-1).url);
   assert.equal(events(second)[0].reused, true);
   assert.equal(events(second)[0].resumed, true);
-  assert.equal(f.state.checkoutRequests, 1);
+  assert.equal(f.state.checkoutRequests, 2);
   assert.equal(f.state.checkoutCreated, 1);
   assert.equal(totalWait(second), 60000);
   assert.deepEqual(second.trace.browserUrls, [events(second)[0].url]);
@@ -237,4 +237,63 @@ test('打开付款浏览器也计入非交互 60 秒预算，轮询 5xx 可恢�
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(result.trace.delays, [3000, 3000, 3000]);
   assert.equal(f.state.checkoutPolls, 4);
+});
+
+test('付款响应币种优先于目录和CLI语言，美元显示$9.99，恢复后仍用实际金额', async (t) => {
+  const f = await fixture(t); f.state.checkoutActiveAfter = Infinity;
+  await mkdir(path.join(f.home, '.codex'));
+  f.state.checkoutPrice = { amount: 999, currency: 'usd' };
+  const first = await f.run(installArgs, { OIL_TOKEN: INACTIVE });
+  const [checkout] = events(first);
+  assert.equal(checkout.amount, 999); assert.equal(checkout.currency, 'usd'); assert.equal(checkout.price_label, '$9.99');
+  assert.match(checkout.message, /\$9\.99/); assert.doesNotMatch(checkout.message, /69 元/);
+  const saved = JSON.parse(await readFile(f.configFile, 'utf8'));
+  assert.equal(saved.pending_checkout.amount, 999); assert.equal(saved.pending_checkout.currency, 'usd');
+  const second = await f.run(installArgs, { OIL_TOKEN: INACTIVE });
+  assert.equal(events(second)[0].price_label, '$9.99'); assert.equal(events(second)[0].id, checkout.id);
+});
+
+test('恢复未付会话时按本次语言向商店核对，币种变化使用新链接', async (t) => {
+  const f = await fixture(t); f.state.checkoutActiveAfter = Infinity;
+  await mkdir(path.join(f.home, '.codex'));
+  f.state.checkoutPrices = { zh: { amount: 6900, currency: 'cny' }, en: { amount: 999, currency: 'usd' } };
+  const first = await f.run([...installArgs, '--lang', 'zh'], { OIL_TOKEN: INACTIVE });
+  const second = await f.run([...installArgs, '--lang', 'en'], { OIL_TOKEN: INACTIVE });
+  const a = events(first)[0], b = events(second)[0];
+  assert.notEqual(a.id, b.id); assert.notEqual(a.url, b.url); assert.equal(b.currency, 'usd'); assert.equal(b.amount, 999);
+  assert.equal(b.price_label, '$9.99'); assert.match(b.message, /\$9\.99, one-time purchase/);
+  assert.equal(b.resumed, false); assert.equal(b.reused, false); assert.equal(f.state.checkoutCreated, 2);
+});
+
+test('list使用目录价格，英文美元显示$9.99', async (t) => {
+  const f = await fixture(t); f.state.catalog[0].prices.lifetime = { amount: 999, currency: 'usd', interval: null };
+  const result = await f.run(['list', '--lang', 'en']); assert.equal(result.code, 0);
+  const productLine = result.stdout.split('\n').find(line => /^(Oil UI Pro|oil-ui-pro):/.test(line));
+  assert.ok(productLine); assert.match(productLine, /\$9\.99/); assert.doesNotMatch(productLine, /69|CNY/);
+  const listing = events(await f.run(['list', '--lang', 'en', '--json']))[0];
+  assert.equal(listing.skills.find((s) => s.skill === 'oil-ui-pro').prices.lifetime.currency, 'usd');
+  assert.equal(listing.skills.find((s) => s.skill === 'oil-ui-pro').prices.lifetime.amount, 999);
+});
+
+test('恢复时status暂时失败仍由商店核对币种，不打开旧人民币页面', async (t) => {
+  const f = await fixture(t); await mkdir(path.join(f.home, '.codex')); f.state.checkoutActiveAfter = Infinity;
+  f.state.checkoutPrices = { zh: { amount: 6900, currency: 'cny' }, en: { amount: 999, currency: 'usd' } };
+  const first = await f.run([...installArgs, '--lang', 'zh'], { OIL_TOKEN: INACTIVE });
+  f.state.checkoutStatusErrors = [];
+  f.state.checkoutStatusErrors[f.state.checkoutStatusPolls] = true;
+  const second = await f.run([...installArgs, '--lang', 'en'], { OIL_TOKEN: INACTIVE });
+  assert.equal(second.code, 3); assert.equal(events(second)[0].currency, 'usd');
+  assert.notEqual(events(second)[0].id, events(first)[0].id); assert.equal(f.state.checkoutRequests, 2);
+  assert.deepEqual(second.trace.browserUrls, [events(second)[0].url]);
+});
+
+test('CI恢复时保留本地记录，给本次显式语言的网页入口', async (t) => {
+  const f = await fixture(t); await mkdir(path.join(f.home, '.codex')); f.state.checkoutActiveAfter = Infinity;
+  const first = await f.run([...installArgs, '--lang', 'zh'], { OIL_TOKEN: INACTIVE });
+  const second = await f.run([...installArgs, '--lang', 'en'], { OIL_TOKEN: INACTIVE, CI: 'true' });
+  const result = events(second)[0];
+  assert.equal(result.purchase_url, `${f.base}/api/store/checkout?skill=oil-ui-pro&lang=en`);
+  assert.equal(result.id, undefined); assert.equal(f.state.checkoutRequests, 1);
+  assert.deepEqual(second.trace.browserUrls, []);
+  assert.equal(JSON.parse(await readFile(f.configFile, 'utf8')).pending_checkout.id, events(first)[0].id);
 });

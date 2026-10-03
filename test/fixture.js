@@ -161,19 +161,20 @@ export async function fixture(t) {
         state.checkoutToken = token;
         state.checkoutSkill = body.skill;
         const plan = body.plan || state.catalog.find((p) => p.paid?.skill === body.skill)?.offer?.[0] || 'lifetime';
+        const price = state.checkoutPrices?.[body.lang || (english ? 'en' : 'zh')] || state.checkoutPrice || state.catalog.find((p) => p.paid?.skill === body.skill)?.prices[plan];
         const own = [...state.sessions.values()].filter((s) => s.token === token && s.skill === body.skill);
         if (own.some((s) => s.paid)) {
           state.grants.set(token, [...new Set([...(state.grants.get(token) || []), body.skill])]);
           for (const s of own) if (s.status === 'open' && !s.paid) s.status = 'expired';
           return error(res, 409, 'already_active', english ? 'Already purchased.' : '已经解锁。');
         }
-        const reused = own.find((s) => s.status === 'open' && s.plan === plan);
-        if (reused) return json(res, 200, { id: reused.id, url: reused.url, reused: true });
+        const reused = own.find((s) => s.status === 'open' && s.plan === plan && s.currency === price?.currency);
+        if (reused) return json(res, 200, { id: reused.id, url: reused.url, reused: true, amount: reused.amount, currency: reused.currency });
         state.checkoutPolls = 0;
         const id = `cs_test_${++state.checkoutCreated}`;
-        const session = { id, url: state.checkoutUrl ?? `${base}/checkout?session=${state.checkoutCreated}`, token, skill: body.skill, plan, status: 'open', paid: false };
+        const session = { id, url: state.checkoutUrl ?? `${base}/checkout?session=${state.checkoutCreated}`, token, skill: body.skill, plan, amount: price?.amount, currency: price?.currency, status: 'open', paid: false };
         state.sessions.set(id, session);
-        return json(res, 200, state.checkoutResponse ?? { id, url: session.url, reused: false });
+        return json(res, 200, state.checkoutResponse ?? { id, url: session.url, reused: false, amount: session.amount, currency: session.currency });
       }
       if (req.method === 'GET' && url.pathname === '/api/store/checkout/status') {
         if (!authenticate()) return;

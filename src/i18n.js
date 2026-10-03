@@ -191,5 +191,6 @@ export const planLabel = (plan) => ({ monthly: t('monthly'), month: t('monthly')
 export function priceLabel(price) {
   const amount = price?.amount ?? price?.unit_amount;
   if (typeof amount !== 'number' || !Number.isFinite(amount) || typeof price.currency !== 'string' || !price.currency) return t('priceUnavailable');
+  if (price.currency.toLowerCase() === 'usd') return `$${(amount / 100).toFixed(2)}`;
   return t(price.currency.toLowerCase() === 'cny' ? 'cnyPrice' : 'otherPrice', { amount: amount / 100, currency: price.currency.toUpperCase() });
 }

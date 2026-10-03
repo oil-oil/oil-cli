@@ -8,8 +8,9 @@ const entitlement = (account, name) => account?.subscriptions.find((s) =>
   s.skill === name && ['active', 'canceling', 'past_due', 'lifetime', 'trialing'].includes(s.status));
 const retryable = (error) => error instanceof CliError && (error.error === 'network' || error.details.http_status >= 500);
 
-function purchaseDetails(product, name, plan) {
-  const price = product.prices[plan];
+function purchaseDetails(product, name, plan, checkout) {
+  const price = Number.isFinite(checkout?.amount) && typeof checkout.currency === 'string' && checkout.currency
+    ? checkout : product.prices[plan];
   return { product_name: skillLabel(name), plan, amount: price?.amount ?? price?.unit_amount ?? null,
     currency: price?.currency ?? null, purchase_type: plan === 'lifetime' ? 'one_time' : 'subscription',
     purchase_description: planLabel(plan), price_label: priceLabel(price) };
@@ -23,7 +24,7 @@ export async function requirePurchase(ctx, name, { plan, force = false } = {}) {
   let details = purchaseDetails(product, name, selectedPlan);
   let checkout = await readPendingCheckout(name, ctx.token, ctx.client.base);
   let state;
-  // 恢复时先查原会话。查询暂时失败也保留它，不创建另一张付款页。
+  // 恢复时先查原会话；未付或状态未知时，再由商店核对本次语言和币种。
   if (checkout) {
     try { state = await ctx.client.checkoutStatus(checkout.id, ctx.token); }
     catch (error) { if (!retryable(error)) throw error; }
@@ -47,14 +48,17 @@ export async function requirePurchase(ctx, name, { plan, force = false } = {}) {
     await clearPendingCheckout(checkout.id);
     checkout = null;
   }
-  if (checkout) details = purchaseDetails(product, name, checkout.plan);
+  if (checkout) details = purchaseDetails(product, name, checkout.plan, checkout);
   const pending = (url, extra = {}) => new CliError(
     t(state?.paid || state?.status === 'complete' ? 'paymentProcessing' : 'pendingPayment', { url }),
     3, 'payment_pending', { skill: name, url, purchase_url: url, next_command: ctx.nextCommand, ...details,
       ...(checkout ? { id: checkout.id } : {}), ...extra });
   if (isCI()) {
     const query = new URLSearchParams({ skill: name, ...(plan ? { plan } : {}), ...(ctx.client.explicitLanguage ? { lang: ctx.client.lang } : {}) });
-    throw pending(checkout?.url || ctx.client.url(`/api/store/checkout?${query}`), { ci: true, opened: false });
+    // CI 不创建会话，给本次语言的网页入口；本地记录留待下次恢复。
+    checkout = null;
+    details = purchaseDetails(product, name, selectedPlan);
+    throw pending(ctx.client.url(`/api/store/checkout?${query}`), { ci: true, opened: false });
   }
 
   const waitMs = ctx.terminal ? 900_000 : 60_000;
@@ -64,8 +68,8 @@ export async function requirePurchase(ctx, name, { plan, force = false } = {}) {
     if (checkout) await clearPendingCheckout(checkout.id);
     ctx.output.write({ event: 'subscribed', skill: name, ...(subscription ? { subscription } : {}), ...extra }, [t('purchased', { name: skillLabel(name) })]);
   };
-  const resumed = Boolean(checkout);
-  if (!checkout) {
+  const previousId = checkout?.id;
+  if (!checkout || !state || (state.status === 'open' && !state.paid)) {
     try {
       checkout = await ctx.client.request('/api/store/checkout', { method: 'POST', token: ctx.token,
         body: { skill: name, ...(plan ? { plan } : {}), ...(ctx.client.explicitLanguage ? { lang: ctx.client.lang } : {}) }, timeoutMs: Math.min(30_000, waitMs) });
@@ -83,8 +87,10 @@ export async function requirePurchase(ctx, name, { plan, force = false } = {}) {
         || !['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
     } catch { throw new CliError(t('invalidCheckout'), 1, 'invalid_response'); }
     // 先落盘，再打开浏览器；中断和超时后都能恢复。
-    await savePendingCheckout({ id: checkout.id, url: checkout.url, skill: name, plan: selectedPlan }, ctx.token, ctx.client.base);
+    await savePendingCheckout({ id: checkout.id, url: checkout.url, skill: name, plan: selectedPlan, ...(Number.isFinite(checkout.amount) && checkout.currency ? { amount: checkout.amount, currency: checkout.currency } : {}) }, ctx.token, ctx.client.base);
   }
+  const resumed = previousId === checkout.id;
+  details = purchaseDetails(product, name, checkout.plan || selectedPlan, checkout);
   const processing = state?.paid || state?.status === 'complete';
   const browserBudget = Math.min(5000, deadline - ctx.now());
   const opened = !processing && browserBudget > 0 && await ctx.openBrowser(checkout.url, browserBudget);

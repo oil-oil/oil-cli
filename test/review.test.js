@@ -197,7 +197,7 @@ test('原会话查询遇到 5xx 仍复用；等待时接口暂时失败可恢复
   const result = await f.run(args, { OIL_TOKEN: INACTIVE });
   assert.equal(result.code, 0, result.stdout);
   assert.equal(events(result)[0].id, saved.id);
-  assert.equal(f.state.checkoutRequests, 1);
+  assert.equal(f.state.checkoutRequests, 2);
   assert.deepEqual(result.trace.delays, [3000, 3000]);
 });
 
@@ -240,7 +240,7 @@ test('本地付款记录丢失时仍接受服务器复用；价格取目录金�
   assert.equal(events(second)[0].resumed, false);
   assert.equal(events(second)[0].amount, 1250);
   assert.equal(events(second)[0].currency, 'usd');
-  assert.match(events(second)[0].message, /12\.5 USD/);
+  assert.match(events(second)[0].message, /\$12\.50/);
   assert.equal(data(second).id, data(first).id);
   assert.equal(f.state.checkoutRequests, 2);
   assert.equal(f.state.checkoutCreated, 1);
@@ -380,7 +380,7 @@ test('同一令牌重新登录保留付款记录；英文授权超时、拒绝�
   assert.equal((await pending(f)).id, saved.id);
   const retried = await f.run(args);
   assert.equal(retried.code, 3);
-  assert.equal(f.state.checkoutRequests, 1);
+  assert.equal(f.state.checkoutRequests, 2);
   const g = await fixture(t);
   g.state.deviceStatuses = ['authorization_pending'];
   const timeout = await g.run(['login', '--json'], { OIL_LANG: 'en' });
