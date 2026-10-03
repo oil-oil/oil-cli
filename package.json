@@ -1,6 +1,6 @@
 {
   "name": "oil-cli",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "安装、更新和管理 oiloil 商店里的 Skill",
   "type": "module",
   "bin": {
