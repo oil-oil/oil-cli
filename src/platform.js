@@ -26,7 +26,7 @@ export function directoryKey(value, platform = process.platform, resolvePath = p
         }
       }
     }
-    return value.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '').toLowerCase();
+    return paths.resolve(value.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '')).toLowerCase();
   }
   return paths.resolve(value);
 }

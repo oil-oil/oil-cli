@@ -57,10 +57,11 @@ test('Windows 路径比较统一大小写、/ 和扩展路径前缀，POSIX 保�
 
 test('Windows 路径比较解析短路径父目录，即使 Skill 目标尚未创建', () => {
   const resolvePath = (value) => {
-    if (value === 'C:\\Users\\RUNNER~1') return '\\\\?\\C:\\Users\\runneradmin';
+    if (value === 'C:\\Users\\RUNNER~1') return '\\\\?\\C:\\Users\\runneradmin\\';
     throw Object.assign(new Error('missing'), { code: 'ENOENT' });
   };
   assert.equal(directoryKey('C:\\Users\\RUNNER~1\\.claude\\skills', 'win32', resolvePath), 'c:\\users\\runneradmin\\.claude\\skills');
+  assert.equal(directoryKey('C:\\Users\\RUNNER~1', 'win32', resolvePath), 'c:\\users\\runneradmin');
   assert.throws(() => directoryKey('C:\\locked', 'win32', () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); }), { code: 'EACCES' });
 });
 

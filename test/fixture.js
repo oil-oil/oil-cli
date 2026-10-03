@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, lstat, readlink, symlink, link, copyFile, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, lstat, readlink, symlink, copyFile, realpath } from 'node:fs/promises';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -21,7 +21,7 @@ export const configMode = process.platform === 'win32' ? 0o666 : 0o600;
 export const linkDirectory = (target, directory) => symlink(target, directory, process.platform === 'win32' ? 'junction' : 'dir');
 export const readDirectoryLink = async (directory) => {
   const target = await readlink(directory);
-  return process.platform === 'win32' ? target.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '') : target;
+  return process.platform === 'win32' ? path.resolve(target.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '')) : target;
 };
 export async function pack(file, source, names) {
   const tar = tarInvocation(file, source);
@@ -67,8 +67,8 @@ export async function mockCommandProcessor(directory) {
   // 异步授权完成前不能让 Node 把 cmd 的 /d 当作主脚本加载。
   await writeFile(helper, `if (process.argv.includes('/v:off') && process.env.OIL_BROWSER_URL) {\nrequire('node:module').runMain = () => {};\n${browserScript}}\n`);
   const executable = path.join(directory, 'cmd.exe');
-  try { await link(process.execPath, executable); }
-  catch { await copyFile(process.execPath, executable); }
+  // Node 18 的 Windows 进程会锁住自身可执行文件，硬链接也无法删除。
+  await copyFile(process.execPath, executable);
   return { executable, nodeOptions: `--require "${helper.replaceAll('\\', '/')}"` };
 }
 
@@ -82,7 +82,7 @@ export async function fixture(t) {
   let commandProcessor = process.env.ComSpec;
   if (process.platform === 'win32') {
     const mock = await mockCommandProcessor(mockBin);
-    // Windows 在 PATH 之前搜索系统目录；用 ComSpec 显式指定模拟程序。
+    // 用 ComSpec 显式指定模拟程序，避免依赖可执行文件搜索和硬链接名称。
     commandProcessor = mock.executable;
     nodeOptions += ` ${mock.nodeOptions}`;
   } else {
