@@ -33,8 +33,8 @@ test('非交互最多等待 60 秒，保存权限 600 的待领取记录，退�
   } });
   assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
   assert.match(result.stdout, /没能自动打开浏览器/);
-  assert(result.stdout.includes(`请打开：${saved.pending_device.verification_uri_complete}\n设备代码：${saved.pending_device.user_code}\n`));
-  assert.equal(result.stderr.trim(), `在浏览器打开 ${saved.pending_device.verification_uri_complete}，确认代码 ${saved.pending_device.user_code} 后点“允许”，然后再运行一次刚才的命令。`);
+  assert(result.stdout.includes(`请打开：${saved.pending_device.verification_uri_complete}\n授权码：${saved.pending_device.user_code}\n`));
+  assert.equal(result.stderr.trim(), `在浏览器打开 ${saved.pending_device.verification_uri_complete}，确认授权码 ${saved.pending_device.user_code} 后点“允许”，然后再运行一次刚才的命令。`);
   noDeviceSecret(result, saved.pending_device.device_code);
   await assert.rejects(access(path.join(f.home, '.codex', 'skills', 'oil-ui-pro')), { code: 'ENOENT' });
 
@@ -110,7 +110,7 @@ test('真实 CLI 在设备码显示后被杀掉，浏览器随后允许，下一
   assert.equal(second.code, 0, second.stderr);
   assert.equal(f.state.deviceRequests, 1);
   assert.match(second.stdout, /已安装 oil-ui-pro/);
-  assert(second.stdout.includes(`设备代码：${pending.user_code}`));
+  assert(second.stdout.includes(`授权码：${pending.user_code}`));
   assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL });
   noDeviceSecret(first, pending.device_code);
   noDeviceSecret(second, pending.device_code);
@@ -217,7 +217,7 @@ test('交互终端复用待领取代码并等满 10 分钟；实际到期时清�
   assert.equal(result.trace.delays.reduce((sum, ms) => sum + ms, 0), 600000);
   assert.equal(f.state.deviceRequests, 1);
   assert.match(result.stdout, /最长等待 10 分钟/);
-  assert(result.stdout.includes(`请打开：${pending.verification_uri_complete}\n设备代码：${pending.user_code}`));
+  assert(result.stdout.includes(`请打开：${pending.verification_uri_complete}\n授权码：${pending.user_code}`));
   assert.deepEqual((await config(f)).pending_device, pending);
   noDeviceSecret(result, pending.device_code);
   // 清除后发起的新代码也拒绝时，应删除新记录并退出，避免无限换码。

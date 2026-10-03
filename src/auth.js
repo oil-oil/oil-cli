@@ -38,14 +38,14 @@ async function deviceLogin(ctx) {
     const opened = browserBudget > 0 && await ctx.openBrowser(device.verification_uri_complete, browserBudget);
     const warnings = opened ? [] : ['没能自动打开浏览器，请手动打开上面的链接。'];
     ctx.output.write({ event: 'device', ...publicDevice(device), opened, warnings },
-      [`请打开：${device.verification_uri_complete}`, `设备代码：${device.user_code}`, ...warnings,
+      [`请打开：${device.verification_uri_complete}`, `授权码：${device.user_code}`, ...warnings,
         `在浏览器里核对代码并允许登录；最长等待 ${ctx.terminal ? '10 分钟' : '60 秒'}，按 Ctrl+C 取消。`]);
 
     try {
       while (true) {
         if (ctx.now() >= device.expires_at) throw expired();
         if (ctx.now() >= waitDeadline) {
-          throw new CliError(`在浏览器打开 ${device.verification_uri_complete}，确认代码 ${device.user_code} 后点“允许”，然后再运行一次刚才的命令。`,
+          throw new CliError(`在浏览器打开 ${device.verification_uri_complete}，确认授权码 ${device.user_code} 后点“允许”，然后再运行一次刚才的命令。`,
             3, 'authorization_pending', { ...publicDevice(device), next_command: ctx.nextCommand });
         }
         const deadline = Math.min(device.expires_at, waitDeadline);

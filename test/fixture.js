@@ -184,7 +184,7 @@ export async function fixture(t) {
     let stdout = '', stderr = '';
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
-      if (runtime.killOnDevice && (stdout.includes('设备代码：') || stdout.includes('"event":"device"'))) child.kill('SIGKILL');
+      if (runtime.killOnDevice && (stdout.includes('授权码：') || stdout.includes('"event":"device"'))) child.kill('SIGKILL');
     });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.stdin.end();

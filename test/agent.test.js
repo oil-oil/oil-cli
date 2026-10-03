@@ -324,7 +324,7 @@ test('一句安装命令的真实入口：非交互设备码登录后自动安�
   const free = await writeSkill(root, 'oil-ui', '0.8.0');
   const result = await f.run(['install', 'oil-ui-pro'], { OIL_TEST_BROWSER: 'approve' }, { real: true });
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /设备代码：KDQW-7RTF/);
+  assert.match(result.stdout, /授权码：KDQW-7RTF/);
   assert.match(result.stdout, /已登录：test@example.com/);
   assert.match(result.stdout, /已安装 oil-ui-pro/);
   assert.match(result.stdout, /已移除同位置的免费版/);
