@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { access, mkdir, readFile, stat } from 'node:fs/promises';
-import { fixture, writeSkill, snapshot, TOKEN, INACTIVE, EMAIL } from './fixture.js';
+import { fixture, writeSkill, snapshot, TOKEN, INACTIVE, EMAIL, configMode } from './fixture.js';
 
 const events = (result) => {
   assert.equal(result.signal, null, result.stderr);
@@ -73,7 +73,7 @@ test('非交互付款最多等 60 秒，退出 3，JSON 给出付款链接与原
   assert.equal(saved.pending_checkout.id, checkout.id);
   assert.equal(saved.pending_checkout.url, checkout.url);
   assert.equal(saved.token, undefined);
-  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
+  assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
 });
 
 test('非交互付款超时的普通输出包含付款链接和指定重跑提示', async (t) => {
@@ -130,7 +130,7 @@ test('超时后仍未付款，保存并复用付款会话，重跑不创建新�
   assert.equal(saved.pending_checkout.id, events(first)[0].id);
   assert.equal(saved.pending_checkout.url, events(first)[0].url);
   assert.equal(saved.token, undefined);
-  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
+  assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
   await absent(path.join(f.home, '.codex', 'skills', 'oil-ui-pro'));
 });
 

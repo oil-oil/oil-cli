@@ -2,16 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtemp, mkdir, readFile, writeFile, rm, rename, access, readdir, symlink, readlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, rename, access, readdir } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { parseSkill, compare, updates } from '../src/skills.js';
 import { replaceAll as replace, validateArchive } from '../src/install.js';
 import { Output } from '../src/io.js';
 import { configPath } from '../src/config.js';
 import { openBrowser } from '../src/browser.js';
-import { writeSkill, snapshot, TOKEN } from './fixture.js';
+import { writeSkill, snapshot, TOKEN, pack, linkDirectory, readDirectoryLink } from './fixture.js';
 
 const replaceAll = (actions, options = {}) => replace(actions, { names: ['oil-ui', 'oil-ui-pro'], ...options });
 
@@ -111,7 +109,7 @@ test('清理前重查符号链接，途中变成链接时回滚 Pro 并保留链
   const renameFile = async (from, to) => {
     if (path.basename(from) === 'new' && to === pro) {
       await rename(free, external);
-      await symlink(external, free, 'dir');
+      await linkDirectory(external, free);
     }
     return rename(from, to);
   };
@@ -121,7 +119,7 @@ test('清理前重查符号链接，途中变成链接时回滚 Pro 并保留链
   ], { renameFile }), { error: 'symbolic_link' });
   assert.deepEqual(await snapshot(pro), before[0]);
   assert.deepEqual(await snapshot(external), before[1]);
-  assert.equal(await readlink(free), external);
+  assert.equal(await readDirectoryLink(free), external);
 });
 
 test('还原本身失败时保留原目录备份，禁止清理掉它', async (t) => {
@@ -186,20 +184,21 @@ test('系统 tar 生成的长路径（PAX/ustar）发布物可以通过预检', 
   await mkdir(deep, { recursive: true });
   await writeFile(path.join(deep, '中文.txt'), '长路径');
   const file = path.join(directory, 'long.tar.gz');
-  await promisify(execFile)('tar', ['-czf', file, '-C', source, 'oil-ui'], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
+  await pack(file, source, ['oil-ui']);
   await validateArchive(file, 'oil-ui');
 });
 
 test('配置位置遵守 XDG、HOME 和 Windows APPDATA；浏览器调用平台原生命令', async () => {
-  assert.equal(configPath({ HOME: '/tmp/home' }, 'linux'), path.join('/tmp/home', '.config', 'oil', 'config.json'));
-  assert.equal(configPath({ HOME: '/tmp/home', XDG_CONFIG_HOME: '/tmp/config' }, 'darwin'), path.join('/tmp/config', 'oil', 'config.json'));
-  assert.equal(configPath({ APPDATA: '/tmp/appdata' }, 'win32'), path.join('/tmp/appdata', 'oil', 'config.json'));
+  assert.equal(configPath({ HOME: '/tmp/home' }, 'linux'), '/tmp/home/.config/oil/config.json');
+  assert.equal(configPath({ HOME: '/tmp/home', XDG_CONFIG_HOME: '/tmp/config' }, 'darwin'), '/tmp/config/oil/config.json');
+  assert.equal(configPath({ APPDATA: 'C:\\Users\\test\\AppData\\Roaming' }, 'win32'), 'C:\\Users\\test\\AppData\\Roaming\\oil\\config.json');
   for (const [platform, command] of [['darwin', 'open'], ['linux', 'xdg-open'], ['win32', 'cmd.exe']]) {
     let called;
     assert.equal(await openBrowser('https://example.com/pay?a=1&b=2', platform, async (...args) => { called = args; }), true);
     assert.equal(called[0], command);
     if (platform === 'win32') {
-      assert(called[1].at(-1).startsWith('start '));
+      assert.equal(called[1].at(-1), '"start "" "%OIL_BROWSER_URL%""');
+      assert.equal(called[2].windowsVerbatimArguments, true);
       assert.equal(called[2].env.OIL_BROWSER_URL, 'https://example.com/pay?a=1&b=2');
     } else assert.deepEqual(called[1], ['https://example.com/pay?a=1&b=2']);
   }

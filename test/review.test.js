@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { access, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { resolveLanguage, dictionary } from '../src/i18n.js';
-import { fixture, writeSkill, TOKEN, INACTIVE, INVALID } from './fixture.js';
+import { fixture, writeSkill, TOKEN, INACTIVE, INVALID, configMode } from './fixture.js';
 
 const events = (result) => {
   assert.equal(result.signal, null);
@@ -207,11 +207,11 @@ test('待付款记录绑定服务器和令牌，其他账号不会查询或打�
   assert.equal((await f.run(args, { OIL_TOKEN: INACTIVE })).code, 3);
   const text = await readFile(f.configFile, 'utf8');
   assert(!text.includes(INACTIVE));
-  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
+  assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
   const other = await fixture(t);
   other.state.checkoutActiveAfter = Infinity;
   const originalRequests = f.state.requests.length;
-  const result = await other.run(args, { OIL_TOKEN: INACTIVE, XDG_CONFIG_HOME: f.config });
+  const result = await other.run(args, { OIL_TOKEN: INACTIVE, XDG_CONFIG_HOME: f.config, APPDATA: f.config });
   assert.equal(result.code, 3);
   const createdAt = other.state.requests.findIndex((r) => r.path === '/api/store/checkout');
   assert(createdAt >= 0);
@@ -220,7 +220,7 @@ test('待付款记录绑定服务器和令牌，其他账号不会查询或打�
   assert.equal(other.state.checkoutRequests, 1);
   assert.equal(events(result)[0].url.startsWith(other.base), true);
   const offset = other.state.requests.length;
-  const active = await other.run(args, { OIL_TOKEN: TOKEN, XDG_CONFIG_HOME: f.config });
+  const active = await other.run(args, { OIL_TOKEN: TOKEN, XDG_CONFIG_HOME: f.config, APPDATA: f.config });
   assert.equal(active.code, 0, active.stdout);
   assert(!other.state.requests.slice(offset).some((r) => r.path === '/api/store/checkout/status'));
   const denied = await fetch(`${f.base}/api/store/checkout/status?id=cs_test_1`, { headers: { Authorization: `Bearer ${TOKEN}` } });
@@ -326,7 +326,8 @@ test('真实入口被中断后付款，下一进程读取已保存的会话并�
   const f = await fixture(t);
   f.state.checkoutActiveAfter = Infinity;
   const first = await f.run(args, { OIL_TOKEN: INACTIVE }, { real: true, killOnCheckout: true });
-  assert.equal(first.signal, 'SIGKILL');
+  assert.equal(first.signal, process.platform === 'win32' ? null : 'SIGKILL');
+  assert.notEqual(first.code, 0);
   const saved = await pending(f);
   const session = f.state.sessions.get(saved.id);
   session.status = 'complete';

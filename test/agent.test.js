@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, writeFile, lstat, readlink, access, symlink, realpath } from 'node:fs/promises';
-import { fixture, writeSkill, snapshot, TOKEN, INACTIVE } from './fixture.js';
+import { mkdir, readFile, writeFile, lstat, access, realpath } from 'node:fs/promises';
+import { fixture, writeSkill, snapshot, TOKEN, INACTIVE, linkDirectory, readDirectoryLink } from './fixture.js';
 
 const events = (result) => {
   assert.equal(result.signal, null);
@@ -31,7 +31,7 @@ test('自动检测只接受目录，允许 Agent 目录软链接；显式 --to �
   const f = await fixture(t);
   const agent = path.join(f.temporary, 'agent');
   await mkdir(agent);
-  await symlink(agent, path.join(f.home, '.codex'), 'dir');
+  await linkDirectory(agent, path.join(f.home, '.codex'));
   await writeFile(path.join(f.home, '.claude'), '不是目录');
   let result = await f.run(['install', 'oil-doc', '--json']);
   assert.equal(result.code, 0);
@@ -201,10 +201,10 @@ test('先解析 Skill 软链接和父目录软链接：开发仓库和链接完�
   const root = path.join(f.home, '.codex', 'skills');
   await mkdir(root, { recursive: true });
   const linked = path.join(root, 'oil-ui-pro');
-  await symlink(repository, linked, 'dir');
+  await linkDirectory(repository, linked);
   const plain = await writeSkill(root, 'oil-ui', '0.8.0');
   const alias = path.join(f.temporary, 'root-alias');
-  await symlink(root, alias, 'dir');
+  await linkDirectory(root, alias);
   const before = await snapshot(repository);
   const status = data(await f.run(['status', '--json']));
   assert.equal(status.installations.find((i) => i.name === 'oil-ui-pro').development, true);
@@ -212,7 +212,7 @@ test('先解析 Skill 软链接和父目录软链接：开发仓库和链接完�
     const result = await f.run([...args, '--json']);
     assert.equal(result.code, 0, result.stdout);
     assert.equal(data(result).skipped.length, 1);
-    assert.equal(await readlink(linked), repository);
+    assert.equal(await readDirectoryLink(linked), repository);
     assert((await lstat(linked)).isSymbolicLink());
     assert.deepEqual(await snapshot(repository), before);
   }
@@ -308,7 +308,7 @@ test('多个 Agent 共享软链接 skills 目录时，只安装和更新同一�
   for (const agent of ['claude', 'codex']) {
     const root = path.join(f.home, `.${agent}`);
     await mkdir(root);
-    await symlink(shared, path.join(root, 'skills'), 'dir');
+    await linkDirectory(shared, path.join(root, 'skills'));
   }
   let result = await f.run(['install', 'oil-ui', '--json']);
   assert.equal(result.code, 0, result.stdout);

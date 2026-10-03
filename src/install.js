@@ -11,6 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { CliError } from './io.js';
 import { inspectSkill, isDevelopmentDirectory, isLinkedInstallation, canonicalDirectory } from './skills.js';
+import { tarInvocation, directoryKey } from './platform.js';
 
 const exec = promisify(execFile);
 const archiveError = () => new CliError(t('invalidArchive'), 1, 'invalid_archive');
@@ -55,13 +56,14 @@ function paxFields(buffer) {
 }
 
 // 在系统 tar 解压前流式检查所有实际条目，避免路径穿越及软/硬链接。
-export async function validateArchive(file, name) {
+export async function validateArchive(file, name, platform = process.platform) {
   const input = createReadStream(file);
   const unzip = createGunzip();
   input.on('error', (error) => unzip.destroy(error));
   input.pipe(unzip);
   let buffer = Buffer.alloc(0), remaining = 0, padding = 0, metaType = null, meta = [], extended = {}, longName = null;
   let ended = false, count = 0, hasSkill = false;
+  const windowsEntries = new Set();
   try {
     for await (const chunk of unzip) {
       buffer = Buffer.concat([buffer, chunk]);
@@ -113,6 +115,13 @@ export async function validateArchive(file, name) {
         while (entry.startsWith('./')) entry = entry.slice(2);
         const parts = entry.replace(/\/$/, '').split('/');
         if (!entry || entry.includes('\\') || /[\0\r\n]/.test(entry) || parts[0] !== name || parts.some((part) => !part || part === '..' || part === '.') || (parts.length === 1 && type !== '5')) throw archiveError();
+        if (platform === 'win32') {
+          // 拒绝盘符/ADS、设备名、尾部点空格和大小写碰撞，避免 Windows 把不同条目映射到同一路径。
+          if (parts.some((part) => /[<>:"|?*\x00-\x1f]|[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw archiveError();
+          const key = parts.join('/').toLowerCase();
+          if (windowsEntries.has(key)) throw archiveError();
+          windowsEntries.add(key);
+        }
         if (type === '5' && size !== 0) throw archiveError();
         if (entry === `${name}/SKILL.md` && type === '0') hasSkill = true;
         count++;
@@ -156,7 +165,8 @@ export async function prepare(client, name, release, token, paid, product, signa
     await validateArchive(archive, name);
     const extracted = path.join(temporary, 'extracted');
     await mkdir(extracted);
-    try { await exec('tar', ['-xzf', archive, '-C', extracted], { timeout: 60_000, maxBuffer: 1024 * 1024, signal }); }
+    const tar = tarInvocation(archive, extracted);
+    try { await exec(tar.command, tar.args, { cwd: tar.cwd, timeout: 60_000, maxBuffer: 1024 * 1024, signal }); }
     catch { throw new CliError(t('extractFailed'), 1, 'extract'); }
     const entries = await readdir(extracted);
     if (entries.length !== 1 || entries[0] !== name) throw archiveError();
@@ -189,7 +199,7 @@ export async function replaceAll(actions, { renameFile = rename, signal, names =
     if (await isDevelopmentDirectory(directory)) throw new CliError(t('developmentProtected', { path: directory }), 1, 'development_directory', { path: directory });
   };
   for (const action of actions) await protect(action);
-  const paths = await Promise.all(actions.map((action) => canonicalDirectory(action.path)));
+  const paths = await Promise.all(actions.map(async (action) => directoryKey(await canonicalDirectory(action.path))));
   for (let i = 0; i < paths.length; i++) {
     for (let j = 0; j < paths.length; j++) {
       if (i === j) continue;

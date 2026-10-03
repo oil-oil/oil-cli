@@ -1,11 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { readFile, writeFile, mkdir, access, stat, readdir, symlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access, stat, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { fixture, writeSkill, snapshot, TOKEN, INVALID, INACTIVE } from './fixture.js';
+import { fixture, writeSkill, snapshot, TOKEN, INVALID, INACTIVE, configMode, linkDirectory, pack } from './fixture.js';
 
 const data = (result) => {
   assert.equal(result.signal, null, result.stderr);
@@ -143,7 +141,7 @@ test('login --token 校验后保存权限 600；无效令牌不覆盖配置，�
   assert.equal(result.code, 0);
   const value = data(result);
   assert.equal(value.token_prefix, `${TOKEN.slice(0, 8)}…`);
-  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
+  assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
   assert.deepEqual(JSON.parse(await readFile(f.configFile, 'utf8')), { token: TOKEN, email: 'test@example.com', api: f.base });
   const invalid = await f.run(['login', '--token', INVALID]);
   assert.equal(invalid.code, 3);
@@ -206,9 +204,8 @@ test('压缩包 SKILL 名不符、额外顶层目录和软链接均拒绝，目�
   const before = await snapshot(installed);
   const artifact = f.releases['oil-ui:0.10.0'];
   const original = await readFile(path.join(artifact.source, 'oil-ui', 'SKILL.md'), 'utf8');
-  const exec = promisify(execFile);
   const repack = async (entries) => {
-    await exec('tar', ['-czf', artifact.file, '-C', artifact.source, ...entries], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
+    await pack(artifact.file, artifact.source, entries);
     artifact.body = await readFile(artifact.file);
     artifact.sha256 = createHash('sha256').update(artifact.body).digest('hex');
   };
@@ -225,7 +222,7 @@ test('压缩包 SKILL 名不符、额外顶层目录和软链接均拒绝，目�
   assert.equal(result.code, 1);
   assert.equal(data(result).error, 'invalid_archive');
   assert.deepEqual(await snapshot(installed), before);
-  await symlink('/tmp', path.join(artifact.source, 'oil-ui', 'escape'));
+  await linkDirectory(f.temporary, path.join(artifact.source, 'oil-ui', 'escape'));
   await repack(['oil-ui']);
   result = await f.run(['install', 'oil-ui', '--to', 'codex', '--yes', '--json']);
   assert.equal(result.code, 1);
@@ -538,7 +535,7 @@ test('同一安装经由两个路径（符号链接）被扫到时，status 只�
   const root = path.join(f.home, '.claude', 'skills');
   await writeSkill(root, 'oil-ui', '0.10.0');
   await mkdir(path.join(f.cwd, '.claude'), { recursive: true });
-  await symlink(root, path.join(f.cwd, '.claude', 'skills'));
+  await linkDirectory(root, path.join(f.cwd, '.claude', 'skills'));
   const value = data(await f.run(['status', '--json']));
   assert.equal(value.installations.length, 1);
 });

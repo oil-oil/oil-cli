@@ -10,6 +10,7 @@ import { isSkillName, scan, inspectSkill, isDevelopmentDirectory, installationRo
 import { prepare, replaceAll } from './install.js';
 import { login, loadAuth, requireLogin } from './auth.js';
 import { requirePurchase } from './purchase.js';
+import { directoryKey, sameDirectory } from './platform.js';
 
 export function parseArgs(argv) {
   const options = { command: null, json: false, yes: false, to: [], token: null, plan: null, path: null, skill: null, lang: null };
@@ -137,7 +138,7 @@ async function addFreeReplacements(ctx, actions, targets = actions) {
     if (!paid || !product.free) continue;
     const root = path.dirname(target.path);
     const roots = target.name === 'oil-ui-pro' ? await sameAgentRoots(root) : [root];
-    const key = [product.free.skill, ...[...new Set(await Promise.all(roots.map(canonicalDirectory)))].sort()].join('\0');
+    const key = [product.free.skill, ...[...new Set(await Promise.all(roots.map(async (root) => directoryKey(await canonicalDirectory(root)))))].sort()].join('\0');
     const group = groups.get(key) || { name: product.free.skill, paid: target.name, roots: [], targets: [] };
     group.roots.push(...roots);
     group.targets.push(target);
@@ -148,12 +149,12 @@ async function addFreeReplacements(ctx, actions, targets = actions) {
     const found = await freeReplacements(name, group.roots);
     skipped.push(...found.skipped);
     for (const item of found.skipped) {
-      const index = actions.findIndex((action) => action.path === item.path);
+      const index = actions.findIndex((action) => sameDirectory(action.path, item.path));
       if (index >= 0) actions.splice(index, 1);
     }
-    if (group.targets.every((target) => found.skipped.some((item) => item.path === target.path))) continue;
+    if (group.targets.every((target) => found.skipped.some((item) => sameDirectory(item.path, target.path)))) continue;
     for (const item of found.removable) {
-      const index = actions.findIndex((action) => action.path === item.path);
+      const index = actions.findIndex((action) => sameDirectory(action.path, item.path));
       const replacement = actions[index];
       if (replacement?.name === group.paid) {
         replacement.previousName = name;
@@ -170,7 +171,7 @@ async function addFreeReplacements(ctx, actions, targets = actions) {
 
 async function install(ctx, name = ctx.options.skill) {
   const { paid } = findSkill(ctx.catalog, name);
-  let roots = ctx.options.to.length ? [...new Set(ctx.options.to.map(targetRoot))] : await installationRoots();
+  let roots = ctx.options.to.length ? [...new Set(ctx.options.to.map((value) => targetRoot(value)))] : await installationRoots();
   if (!roots.length) {
     const next = ctx.options.command === 'install' ? `${ctx.nextCommand} --to codex` : command('install', name, '--to', 'codex',
       ...(ctx.options.json ? ['--json'] : []), ...(ctx.options.lang ? ['--lang', ctx.options.lang] : []));
@@ -235,8 +236,8 @@ async function update(ctx) {
   const skipped = found.filter((item) => item.development).map(skippedInstallation);
   const seen = new Set();
   const eligible = found.filter((item) => {
-    if (item.development || seen.has(item.real_path)) return false;
-    seen.add(item.real_path); return true;
+    if (item.development || seen.has(directoryKey(item.real_path))) return false;
+    seen.add(directoryKey(item.real_path)); return true;
   });
   const counts = { found_count: found.length, eligible_count: eligible.length, updated_count: 0 };
   if (!eligible.length) {

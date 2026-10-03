@@ -1,16 +1,17 @@
 import { t } from './i18n.js';
-import { homedir } from 'node:os';
 import path from 'node:path';
-import { chmod, mkdir, readFile, rename, rm, open } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, open } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { CliError } from './io.js';
+import { pathsFor, userHome, restrictPermissions } from './platform.js';
 
 export function configPath(env = process.env, platform = process.platform) {
+  const paths = pathsFor(platform);
   if (platform === 'win32') {
     if (!env.APPDATA) throw new CliError(t('missingAppdata'));
-    return path.join(env.APPDATA, 'oil', 'config.json');
+    return paths.join(env.APPDATA, 'oil', 'config.json');
   }
-  return path.join(env.XDG_CONFIG_HOME || path.join(env.HOME || homedir(), '.config'), 'oil', 'config.json');
+  return paths.join(env.XDG_CONFIG_HOME || paths.join(userHome(env, platform), '.config'), 'oil', 'config.json');
 }
 
 export function isPendingDevice(device) {
@@ -38,7 +39,7 @@ async function readConfig() {
     if (data.pending_device !== undefined && !isPendingDevice(data.pending_device)) throw new Error('invalid config');
     if (data.pending_checkout !== undefined && !isPendingCheckout(data.pending_checkout)) throw new Error('invalid config');
     if (!hasAuth && !data.pending_device && !data.pending_checkout) throw new Error('invalid config');
-    await chmod(file, 0o600);
+    await restrictPermissions(file);
     return data;
   } catch (error) {
     if (error.code === 'ENOENT') return null;
@@ -91,7 +92,7 @@ async function saveConfig(data) {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await chmod(temp, 0o600);
+    await restrictPermissions(temp);
     await rename(temp, file);
   } catch {
     throw new CliError(t('configWrite'), 1, 'config_write');

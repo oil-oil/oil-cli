@@ -2,10 +2,11 @@ import { createServer } from 'node:http';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, lstat, readlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, lstat, readlink, symlink, link, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tarInvocation } from '../src/platform.js';
 
 const exec = promisify(execFile);
 export const CLI = fileURLToPath(new URL('../bin/oil.js', import.meta.url));
@@ -14,6 +15,17 @@ export const TOKEN = 'oil_Abcd0123456789abcdefghijklmnopqrstuvXYZ';
 export const INACTIVE = 'oil_Empty0123456789abcdefghijklmnopqrstuvXYZ';
 export const INVALID = 'oil_Bad0123456789abcdefghijklmnopqrstuvXYZ';
 export const EMAIL = 'test@example.com';
+// Windows 的模式位不区分 owner/group/others；用户隔离由目录 ACL 提供。
+export const configMode = process.platform === 'win32' ? 0o666 : 0o600;
+export const linkDirectory = (target, directory) => symlink(target, directory, process.platform === 'win32' ? 'junction' : 'dir');
+export const readDirectoryLink = async (directory) => {
+  const target = await readlink(directory);
+  return process.platform === 'win32' ? target.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '') : target;
+};
+export async function pack(file, source, names) {
+  const tar = tarInvocation(file, source);
+  await exec(tar.command, ['-czf', path.basename(file), '-C', source, ...names], { cwd: tar.cwd, env: { ...process.env, COPYFILE_DISABLE: '1' } });
+}
 export const CATALOG = [
   { id: 'oil-ui', name: 'Oil UI Pro', summary: '帮你做好界面。', features: [], free: { skill: 'oil-ui' }, paid: { skill: 'oil-ui-pro' }, offer: ['lifetime'], prices: { lifetime: { amount: 6900, currency: 'cny', interval: null } }, page: '/pro/' },
   { id: 'oil-doc', name: 'Oil Doc Pro', summary: '整理文档。', features: [], free: { skill: 'oil-doc' }, paid: { skill: 'oil-doc-pro' }, offer: ['yearly'], prices: { yearly: { amount: 9900, currency: 'cny', interval: 'year' } }, page: '/store/oil-doc-pro/' },
@@ -31,7 +43,7 @@ export async function release(directory, name, version) {
   const source = path.join(directory, `source-${name}-${version}`);
   await writeSkill(source, name, version);
   const file = path.join(directory, `${name}-${version}.tar.gz`);
-  await exec('tar', ['-czf', file, '-C', source, name], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
+  await pack(file, source, [name]);
   const body = await readFile(file);
   return { body, sha256: createHash('sha256').update(body).digest('hex'), file, source };
 }
@@ -40,13 +52,18 @@ export async function fixture(t) {
   const temporary = await mkdtemp(path.join(tmpdir(), 'oil-test-'));
   const home = path.join(temporary, 'home'), cwd = path.join(temporary, 'project'), config = path.join(temporary, 'config'), mockBin = path.join(temporary, 'bin');
   for (const directory of [home, cwd, config, mockBin]) await mkdir(directory);
-  // 完全替代系统浏览器命令；手动验收时这个脚本向假服务模拟浏览器允许。
-  for (const name of ['open', 'xdg-open', 'cmd.exe']) {
-    await writeFile(path.join(mockBin, name), `#!${process.execPath}\nif (process.env.OIL_TEST_BROWSER !== 'approve') process.exit(1);\nconst url = new URL(process.argv.at(-1));\nif (url.pathname.endsWith('/device/')) {\nconst response = await fetch(new URL('/api/cli/device/approve', url), {method: 'POST', headers: {'Content-Type': 'application/json', Cookie: 'oil_session=fake'}, body: JSON.stringify({user_code: url.searchParams.get('code'), approve: true})});\nif (!response.ok) process.exit(1);\n}\n`, { mode: 0o755 });
-    // 浏览器脚本没有 .mjs 后缀，使用异步函数兼容 Node 18 的 CommonJS 入口。
-    const file = path.join(mockBin, name);
-    const script = await readFile(file, 'utf8');
-    await writeFile(file, script.replace("if (process.env", "(async () => {\nif (process.env") + '\n})().catch(() => process.exit(1));\n');
+  // 真 CLI 也使用假浏览器。Windows 不能执行 shebang，使用 Node 的 exe 和预加载脚本。
+  const browserScript = `(async () => {\nif (process.env.OIL_TEST_BROWSER !== 'approve') process.exit(1);\nconst url = new URL(process.env.OIL_BROWSER_URL || process.argv.at(-1));\nif (url.pathname.endsWith('/device/')) {\nconst response = await fetch(new URL('/api/cli/device/approve', url), {method: 'POST', headers: {'Content-Type': 'application/json', Cookie: 'oil_session=fake'}, body: JSON.stringify({user_code: url.searchParams.get('code'), approve: true})});\nif (!response.ok) process.exit(1);\n}\nprocess.exit(0);\n})().catch(() => process.exit(1));\n`;
+  let nodeOptions = process.env.NODE_OPTIONS || '';
+  if (process.platform === 'win32') {
+    const helper = path.join(mockBin, 'browser-helper.cjs');
+    await writeFile(helper, `if (require('node:path').basename(process.execPath).toLowerCase() === 'cmd.exe') {\n${browserScript}}\n`);
+    const executable = path.join(mockBin, 'cmd.exe');
+    try { await link(process.execPath, executable); }
+    catch { await copyFile(process.execPath, executable); }
+    nodeOptions += ` --require "${helper.replaceAll('\\', '/')}"`;
+  } else {
+    for (const name of ['open', 'xdg-open']) await writeFile(path.join(mockBin, name), `#!${process.execPath}\n${browserScript}`, { mode: 0o755 });
   }
   const releases = {};
   for (const name of ['oil-ui', 'oil-ui-pro', 'oil-doc', 'oil-doc-pro']) {
@@ -205,7 +222,8 @@ export async function fixture(t) {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${server.address().port}`;
-  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: config, APPDATA: config, CODEX_HOME: '', OIL_LANG: '', LC_ALL: 'C', LC_MESSAGES: '', LANG: '', OIL_API: base, OIL_TOKEN: '', CI: '', OIL_TEST_BROWSER: '', PATH: `${mockBin}${path.delimiter}${process.env.PATH || ''}` };
+  const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: config, APPDATA: config, CODEX_HOME: '', OIL_LANG: '', LC_ALL: 'C', LC_MESSAGES: '', LANG: '', OIL_API: base, OIL_TOKEN: '', CI: '', OIL_TEST_BROWSER: '', NODE_OPTIONS: nodeOptions, PATH: `${mockBin}${path.delimiter}${process.env.PATH || ''}` };
+  for (const key of Object.keys(env)) if (key !== 'PATH' && key.toLowerCase() === 'path') delete env[key];
   const configFile = path.join(config, 'oil', 'config.json');
   let runNumber = 0;
   const run = (args, extraEnv = {}, runtime = {}) => new Promise((resolve, reject) => {

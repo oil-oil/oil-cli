@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { access, mkdir, readFile, readlink, realpath, symlink, writeFile } from 'node:fs/promises';
-import { fixture as createFixture, writeSkill, snapshot, TOKEN, INVALID, INACTIVE } from './fixture.js';
+import { access, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { fixture as createFixture, writeSkill, snapshot, TOKEN, INVALID, INACTIVE, linkDirectory, readDirectoryLink } from './fixture.js';
 
 const fixture = async (t) => {
   const f = await createFixture(t);
@@ -97,7 +97,7 @@ test('开发目录、无 .git 的符号链接和无法识别的 oil-ui 目录跳
   await mkdir(path.join(development, 'nested', '.git'), { recursive: true });
   const external = await writeSkill(path.join(f.temporary, 'external'), 'oil-ui', '0.8.0');
   const linked = path.join(user, 'linked-free');
-  await symlink(external, linked, 'dir');
+  await linkDirectory(external, linked);
   const unknown = await writeSkill(project, 'unrelated', '1.0.0', 'oil-ui');
   await writeFile(path.join(unknown, 'SKILL.md'), '# no frontmatter\n');
   const removable = await writeSkill(project, 'oil-ui', '0.8.0', 'removable');
@@ -114,7 +114,7 @@ test('开发目录、无 .git 的符号链接和无法识别的 oil-ui 目录跳
   assert.equal(value.warnings.length, 1);
   assert.match(value.warnings[0], /抢着接同一类请求/);
   await absent(removable);
-  assert.equal(await readlink(linked), external);
+  assert.equal(await readDirectoryLink(linked), external);
   assert.deepEqual(await Promise.all([development, external, unknown].map(snapshot)), before);
   const zh = await f.run(['install', 'oil-ui-pro', '--to', 'claude'], { OIL_TOKEN: TOKEN });
   assert.equal(zh.code, 0, zh.stderr);
@@ -134,14 +134,14 @@ test('同宿主内符号链接的真实目标也保留，不因扫描去重遗�
   const free = await writeSkill(user, 'oil-ui', '0.8.0');
   await mkdir(project, { recursive: true });
   const linked = path.join(project, 'free-alias');
-  await symlink(free, linked, 'dir');
+  await linkDirectory(free, linked);
   const before = await snapshot(free);
   const result = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--json'], { OIL_TOKEN: TOKEN });
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(data(result).removed, []);
   assert.deepEqual(sorted(data(result).skipped.map((item) => item.path)), sorted([free, linked]));
   assert(data(result).skipped.every((item) => item.reason === 'symbolic_link'));
-  assert.equal(await readlink(linked), free);
+  assert.equal(await readDirectoryLink(linked), free);
   assert.deepEqual(await snapshot(free), before);
 });
 
@@ -151,14 +151,14 @@ test('通过符号链接 skills 根目录安装 Pro 时，链接指向的开源�
   const free = await writeSkill(shared, 'oil-ui', '0.8.0');
   await mkdir(path.join(f.home, '.claude'));
   const skills = root(f.home, 'claude');
-  await symlink(shared, skills, 'dir');
+  await linkDirectory(shared, skills);
   const before = await snapshot(free);
   const result = await f.run(['install', 'oil-ui-pro', '--to', 'claude', '--json'], { OIL_TOKEN: TOKEN });
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(data(result).removed, []);
   assert.deepEqual(data(result).skipped, [{ name: 'oil-ui', path: path.join(skills, 'oil-ui'), reason: 'symbolic_link' }]);
   assert.deepEqual(await snapshot(free), before);
-  assert.equal(await readlink(skills), shared);
+  assert.equal(await readDirectoryLink(skills), shared);
 });
 
 test('同宿主两处 skills 指向同一实体时，从真实目录装 Pro 也保护软链接目标', async (t) => {
@@ -167,14 +167,14 @@ test('同宿主两处 skills 指向同一实体时，从真实目录装 Pro 也�
   const free = await writeSkill(project, 'oil-ui', '0.8.0');
   await mkdir(path.join(f.home, '.claude'));
   const user = root(f.home, 'claude');
-  await symlink(project, user, 'dir');
+  await linkDirectory(project, user);
   const before = await snapshot(free);
   const result = await f.run(['install', 'oil-ui-pro', '--to', project, '--json'], { OIL_TOKEN: TOKEN });
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(data(result).removed, []);
   assert.deepEqual(sorted(data(result).skipped.map((item) => item.path)), sorted([free, path.join(user, 'oil-ui')]));
   assert(data(result).skipped.every((item) => item.reason === 'symbolic_link'));
-  assert.equal(await readlink(user), project);
+  assert.equal(await readDirectoryLink(user), project);
   assert.deepEqual(await snapshot(free), before);
 });
 
@@ -277,7 +277,7 @@ test('批量安装中某宿主的 Pro 被保护时，不清理该宿主的其他
   const external = await writeSkill(path.join(f.temporary, 'external'), 'oil-ui', '0.8.0');
   await mkdir(claude, { recursive: true });
   const linked = path.join(claude, 'oil-ui-pro');
-  await symlink(external, linked, 'dir');
+  await linkDirectory(external, linked);
   const retained = await writeSkill(root(f.cwd, 'claude'), 'oil-ui', '0.8.0');
   const removed = await writeSkill(root(f.home, 'codex'), 'oil-ui', '0.8.0');
   const before = await Promise.all([external, retained].map(snapshot));
@@ -287,7 +287,7 @@ test('批量安装中某宿主的 Pro 被保护时，不清理该宿主的其他
   assert.deepEqual(data(result).installations.map((item) => item.path), [path.join(root(f.home, 'codex'), 'oil-ui-pro')]);
   assert.deepEqual(data(result).skipped, [{ name: 'oil-ui', path: linked, reason: 'symbolic_link' }]);
   assert.deepEqual(await Promise.all([external, retained].map(snapshot)), before);
-  assert.equal(await readlink(linked), external);
+  assert.equal(await readDirectoryLink(linked), external);
   await absent(removed);
 });
 

@@ -10,7 +10,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node scripts/test.js"
   },
   "files": [
     "bin/",

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { readFile, stat, chmod, access } from 'node:fs/promises';
-import { fixture, writeSkill, TOKEN, EMAIL } from './fixture.js';
+import { fixture, writeSkill, TOKEN, EMAIL, configMode } from './fixture.js';
 
 const config = async (f) => JSON.parse(await readFile(f.configFile, 'utf8'));
 const events = (result) => {
@@ -31,7 +31,7 @@ test('非交互最多等待 60 秒，保存权限 600 的待领取记录，退�
     verification_uri: `${f.base}/device/`, verification_uri_complete: `${f.base}/device/?code=${f.state.userCode}`,
     expires_at: 600000, interval: 5,
   } });
-  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
+  assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
   assert.match(result.stdout, /没能自动打开浏览器/);
   assert(result.stdout.includes(`请打开：${saved.pending_device.verification_uri_complete}\n授权码：${saved.pending_device.user_code}\n`));
   assert.equal(result.stderr.trim(), `在浏览器打开 ${saved.pending_device.verification_uri_complete}，确认授权码 ${saved.pending_device.user_code} 后点“允许”，然后再运行一次刚才的命令。`);
@@ -43,7 +43,7 @@ test('非交互最多等待 60 秒，保存权限 600 的待领取记录，退�
   const status = await f.run(['status', '--json']);
   assert.equal(status.code, 0);
   assert.equal(events(status).at(-1).account, null);
-  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
+  assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
   const retried = await f.run([...args, '--json'], {}, { startTime: 60000 });
   assert.equal(retried.code, 3);
   assert.equal(f.state.deviceRequests, 1);
@@ -84,7 +84,7 @@ test('第二次运行领取同一设备码，保存令牌、清掉待领取记�
   assert.equal(f.state.deviceRequests, 1);
   assert(f.state.requests.filter((request) => request.path === '/api/cli/token').every((request) => request.body.device_code === pending.device_code));
   assert.deepEqual(await config(f), { token: TOKEN, email: EMAIL, api: f.base });
-  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
+  assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
   assert.match(await readFile(path.join(root, 'oil-ui-pro', 'SKILL.md'), 'utf8'), /name: oil-ui-pro/);
   await assert.rejects(access(free), { code: 'ENOENT' });
   noDeviceSecret(first, pending.device_code);
@@ -96,11 +96,12 @@ test('真实 CLI 在设备码显示后被杀掉，浏览器随后允许，下一
   f.state.requireApproval = true;
   const args = ['install', 'oil-ui-pro', '--to', 'codex'];
   const first = await f.run(args, {}, { real: true, killOnDevice: true });
-  assert.equal(first.signal, 'SIGKILL');
+  assert.equal(first.signal, process.platform === 'win32' ? null : 'SIGKILL');
+  assert.notEqual(first.code, 0);
   assert.equal(f.state.devicePolls, 0);
   const pending = (await config(f)).pending_device;
   assert(pending.expires_at > Date.now());
-  assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
+  assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
   const response = await fetch(`${f.base}/api/cli/device/approve`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: 'oil_session=fake' },
     body: JSON.stringify({ user_code: pending.user_code, approve: true }),
@@ -181,7 +182,7 @@ test('待领取设备码被拒绝或服务端宣告过期，清掉旧记录并�
       assert.equal(output[0].user_code, old.user_code);
       assert.equal(output[1].user_code, fresh.user_code);
       assert.equal(output.at(-1).user_code, fresh.user_code);
-      assert.equal((await stat(f.configFile)).mode & 0o777, 0o600);
+      assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
       noDeviceSecret(result, old.device_code);
       noDeviceSecret(result, fresh.device_code);
     });

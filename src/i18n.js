@@ -2,7 +2,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 const context = new AsyncLocalStorage();
 export const COMMAND = 'npx github:oil-oil/oil-cli';
-export const command = (...args) => [COMMAND, ...args.map((value) => /^[A-Za-z0-9_./:@=+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`)].join(' ');
+// Windows 的可复制命令按 PowerShell 引用；POSIX shell 保持原来的单引号转义。
+export const formatCommand = (args, platform = process.platform) => [COMMAND, ...args.map((value) => /^[A-Za-z0-9_./:@=+-]+$/.test(value) ? value : `'${value.replaceAll("'", platform === 'win32' ? "''" : "'\\''")}'`)].join(' ');
+export const command = (...args) => formatCommand(args);
 
 // 每个条目依次是中文、英文；占位符保留命令、路径和服务端数据。
 export const dictionary = {
@@ -10,7 +12,7 @@ export const dictionary = {
   helpUsage: ['用法：{command} <命令> [--json] [--yes] [--lang zh|en]', 'Usage: {command} <command> [--json] [--yes] [--lang zh|en]'],
   helpStatus: ['{command} status（默认）  查看版本和账号', '{command} status (default)  Show versions and account'],
   helpList: ['{command} list  查看 Skill 和价格', '{command} list  List skills and prices'],
-  helpInstall: ['{command} install <skill> [--to claude|codex|agents|cursor|路径]  安装', '{command} install <skill> [--to claude|codex|agents|cursor|path]  Install'],
+  helpInstall: ['{command} install <skill> [--to claude|codex|agents|cursor|workbuddy|路径]  安装', '{command} install <skill> [--to claude|codex|agents|cursor|workbuddy|path]  Install'],
   helpUpdate: ['{command} update [<skill>] [--path <目录>]  更新', '{command} update [<skill>] [--path <directory>]  Update'],
   helpLogin: ['{command} login [--token <令牌>]  登录', '{command} login [--token <access-token>]  Sign in'],
   helpLogout: ['{command} logout  撤销令牌并退出登录', '{command} logout  Revoke the access token and sign out'],
@@ -18,6 +20,7 @@ export const dictionary = {
   helpManage: ['{command} manage  管理购买', '{command} manage  Manage purchases'],
   helpHelp: ['{command} help / {command} --version  帮助 / 版本', '{command} help / {command} --version  Help / version'],
   helpTargets: ['省略 --to 会检测本机 Agent；路径指向 skills 目录，可重复指定。Codex 使用 CODEX_HOME。', 'Without --to, detect local agents. Paths point to skills directories; --to can be repeated. Codex uses CODEX_HOME.'],
+  helpWorkBuddy: ['WorkBuddy 使用 ~/.workbuddy/skills；不自动扫描项目级 .workbuddy/skills。', 'WorkBuddy uses ~/.workbuddy/skills; project-level .workbuddy/skills is not scanned automatically.'],
   helpYes: ['--yes 跳过确认；安装或更新 Oil UI Pro 自动移除同一 Agent 的开源版。', '--yes skips confirmations. Installing or updating Oil UI Pro automatically removes the open source version from the same Agent.'],
   helpJson: ['--json 输出 JSON；登录和付款等待输出 JSON Lines。CI 需要 OIL_TOKEN。', '--json outputs JSON; sign-in and payment waits use JSON Lines. CI requires OIL_TOKEN.'],
   helpLang: ['语言优先级：--lang > OIL_LANG > LC_ALL > LC_MESSAGES > LANG；默认中文。', 'Language priority: --lang > OIL_LANG > LC_ALL > LC_MESSAGES > LANG; defaults to Chinese.'],
@@ -68,7 +71,7 @@ export const dictionary = {
   summary: ['，{summary}', '; {summary}'],
   emptyCatalog: ['商店里还没有 Skill。', 'No skills in the store yet.'],
   missingTarget: ['未检测到 Agent 目录，请用 --to 指定位置，例如：{next}', 'No agent directory found. Use --to to choose a location, for example: {next}'],
-  askTarget: ['安装到哪个 skills 目录？请输入 claude、codex、agents、cursor 或路径：', 'Which skills directory should be used? Enter claude, codex, agents, cursor, or a path: '],
+  askTarget: ['安装到哪个 skills 目录？请输入 claude、codex、agents、cursor、workbuddy 或路径：', 'Which skills directory should be used? Enter claude, codex, agents, cursor, workbuddy, or a path: '],
   noTarget: ['未指定目标，请用 --to 指定位置，例如：{next}', 'No target selected. Use --to to choose a location, for example: {next}'],
   targets: ['安装位置：', 'Install locations:'],
   confirmInstall: ['安装 {name} 到这些位置？', 'Install {name} at these locations?'],

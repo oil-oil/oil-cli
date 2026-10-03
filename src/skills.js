@@ -1,8 +1,11 @@
 import { t, skillLabel } from './i18n.js';
 import { lstat, stat, realpath, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { homedir } from 'node:os';
 import { CliError } from './io.js';
+import { pathsFor, userHome, directoryKey, sameDirectory } from './platform.js';
+
+const agents = ['claude', 'codex', 'agents', 'cursor', 'workbuddy'];
+const projectAgents = ['claude', 'agents', 'codex'];
 
 export const isSkillName = (value) => typeof value === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(value);
 export const isVersion = (value) => typeof value === 'string' && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value);
@@ -79,7 +82,7 @@ export async function isDevelopmentDirectory(directory) {
     if (!(await lstat(resolved)).isDirectory()) return false;
     const containsGit = async (current) => {
       const entries = await readdir(current, { withFileTypes: true });
-      if (entries.some((entry) => entry.name === '.git')) return true;
+      if (entries.some((entry) => (process.platform === 'win32' ? entry.name.toLowerCase() : entry.name) === '.git')) return true;
       for (const entry of entries) {
         // 内部软链接不属于会被整体删除的内容，不向外遍历。
         if (entry.isDirectory() && await containsGit(path.join(current, entry.name))) return true;
@@ -121,7 +124,7 @@ export async function canonicalDirectory(directory) {
 export async function uniqueDirectories(directories) {
   const seen = new Set(), result = [];
   for (const directory of directories) {
-    const resolved = await canonicalDirectory(directory);
+    const resolved = directoryKey(await canonicalDirectory(directory));
     if (!seen.has(resolved)) { result.push(directory); seen.add(resolved); }
   }
   return result;
@@ -130,7 +133,7 @@ export async function uniqueDirectories(directories) {
 // 安装目标只检测用户的 Agent 目录，不把当前项目的目录当作默认目标。
 export async function installationRoots() {
   const roots = [];
-  for (const agent of ['claude', 'codex', 'cursor', 'agents']) {
+  for (const agent of ['claude', 'codex', 'cursor', 'agents', 'workbuddy']) {
     const root = targetRoot(agent);
     const directory = path.dirname(root);
     try {
@@ -142,48 +145,48 @@ export async function installationRoots() {
   return roots;
 }
 
-export function resolveDirectory(value) {
-  const home = process.env.HOME || homedir();
+export function resolveDirectory(value, env = process.env, platform = process.platform, cwd = process.cwd()) {
+  const home = userHome(env, platform), paths = pathsFor(platform);
   if (value === '~') return home;
-  if (/^~[/\\]/.test(value)) return path.resolve(home, value.slice(2));
-  return path.resolve(value);
+  if (/^~[/\\]/.test(value)) return paths.resolve(home, value.slice(2));
+  return paths.resolve(cwd, value);
 }
 
-export function discoveryRoots() {
+export function discoveryRoots(env = process.env, platform = process.platform, cwd = process.cwd()) {
   return [...new Set([
-    ...['claude', 'codex', 'agents', 'cursor'].map(targetRoot),
-    ...['claude', 'agents', 'codex'].map((agent) => path.resolve(`.${agent}`, 'skills')),
+    ...agents.map((agent) => targetRoot(agent, env, platform, cwd)),
+    ...projectAgents.map((agent) => pathsFor(platform).resolve(cwd, `.${agent}`, 'skills')),
   ])];
 }
 
-export function targetRoot(value) {
-  const home = process.env.HOME || homedir();
-  if (value === 'codex' && process.env.CODEX_HOME) return path.join(resolveDirectory(process.env.CODEX_HOME), 'skills');
-  if (['claude', 'codex', 'agents', 'cursor'].includes(value)) return path.join(home, `.${value}`, 'skills');
-  return resolveDirectory(value);
+export function targetRoot(value, env = process.env, platform = process.platform, cwd = process.cwd()) {
+  const home = userHome(env, platform), paths = pathsFor(platform);
+  if (value === 'codex' && env.CODEX_HOME) return paths.join(resolveDirectory(env.CODEX_HOME, env, platform, cwd), 'skills');
+  if (agents.includes(value)) return paths.join(home, `.${value}`, 'skills');
+  return resolveDirectory(value, env, platform, cwd);
 }
 
 function agentRootGroups() {
-  return ['claude', 'codex', 'agents', 'cursor'].map((agent) => [
-    targetRoot(agent), ...(agent === 'cursor' ? [] : [path.resolve(`.${agent}`, 'skills')]),
+  return agents.map((agent) => [
+    targetRoot(agent), ...(projectAgents.includes(agent) ? [path.resolve(`.${agent}`, 'skills')] : []),
   ]);
 }
 
 // 显式路径也按宿主识别；无法归属的自定义目录只清理自身。
 export async function sameAgentRoots(directory) {
   const groups = agentRootGroups();
-  const exact = groups.find((roots) => roots.some((root) => path.resolve(root) === path.resolve(directory)));
+  const exact = groups.find((roots) => roots.some((root) => sameDirectory(root, directory)));
   if (exact) return [...new Set([directory, ...exact])];
-  const resolved = await canonicalDirectory(directory);
+  const resolved = directoryKey(await canonicalDirectory(directory));
   const matches = [];
   for (const roots of groups) {
-    if ((await Promise.all(roots.map(canonicalDirectory))).includes(resolved)) matches.push(roots);
+    if ((await Promise.all(roots.map(async (root) => directoryKey(await canonicalDirectory(root))))).includes(resolved)) matches.push(roots);
   }
   return [...new Set([directory, ...(matches.length === 1 ? matches[0] : [])])];
 }
 
 // 保护 Skill 本身、skills 目录及其宿主目录上的软链接；不把系统路径别名当作安装链接。
-const installationParents = (root) => [root, ...(path.basename(root) === 'skills' ? [path.dirname(root)] : [])];
+const installationParents = (root) => [root, ...(path.basename(root).toLowerCase() === 'skills' ? [path.dirname(root)] : [])];
 async function hasDirectoryLink(directories) {
   for (const current of directories) {
     try { if ((await lstat(current)).isSymbolicLink()) return true; }
@@ -201,7 +204,7 @@ export async function freeReplacements(name, roots) {
   for (const root of [...new Set(roots)]) {
     // 普通路径别名去重，但软链接作用域必须保留，才能保护它指向的真实安装。
     const linkedRoot = await hasDirectoryLink(installationParents(root));
-    const resolved = await canonicalDirectory(root);
+    const resolved = directoryKey(await canonicalDirectory(root));
     if (!linkedRoot && seenRoots.has(resolved)) continue;
     if (!linkedRoot) seenRoots.add(resolved);
     let entries;
@@ -214,10 +217,10 @@ export async function freeReplacements(name, roots) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       const directory = path.join(root, entry.name);
       const item = await inspectSkill(directory, [name]);
-      if (!item && entry.name !== name) continue;
+      if (!item && (process.platform === 'win32' ? entry.name.toLowerCase() : entry.name) !== name) continue;
       const candidate = item || { name, path: directory };
       if (await isLinkedInstallation(directory)) {
-        if (item) linkedTargets.add(item.real_path);
+        if (item) linkedTargets.add(directoryKey(item.real_path));
         skipped.push({ name, path: directory, reason: 'symbolic_link' });
       } else if (item?.development || (!item && await isDevelopmentDirectory(directory))) {
         skipped.push({ name, path: directory, reason: 'development_directory' });
@@ -226,7 +229,7 @@ export async function freeReplacements(name, roots) {
     }
   }
   const removable = candidates.filter((item) => {
-    if (!linkedTargets.has(item.real_path)) return true;
+    if (!linkedTargets.has(directoryKey(item.real_path))) return true;
     skipped.push({ name, path: item.path, reason: 'symbolic_link' });
     return false;
   });
@@ -246,7 +249,7 @@ export async function scan(names, roots = discoveryRoots()) {
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
       const skill = await inspectSkill(path.join(root, entry.name), names);
-      if (skill && !seen.has(skill.real_path)) { seen.add(skill.real_path); found.push(skill); }
+      if (skill && !seen.has(directoryKey(skill.real_path))) { seen.add(directoryKey(skill.real_path)); found.push(skill); }
     }
   }
   return found;
@@ -270,12 +273,12 @@ export async function conflicts(installed, catalog) {
     const seen = new Set();
     for (const pro of installed.filter((item) => item.name === product.paid.skill)) {
       const roots = product.paid.skill === 'oil-ui-pro' ? await sameAgentRoots(pro.root) : [pro.root];
-      const canonical = [...new Set(await Promise.all(roots.map(canonicalDirectory)))];
+      const canonical = [...new Set(await Promise.all(roots.map(async (root) => directoryKey(await canonicalDirectory(root)))))];
       const key = [...canonical].sort().join('\0');
       if (seen.has(key)) continue;
       seen.add(key);
       for (const free of installed.filter((item) => item.name === product.free.skill)) {
-        if (!canonical.includes(await canonicalDirectory(free.root))) continue;
+        if (!canonical.includes(directoryKey(await canonicalDirectory(free.root)))) continue;
         warnings.push(t('conflict', { prefix: `${pro.root}: `, free: skillLabel(product.free.skill), paid: skillLabel(product.paid.skill) }));
         break;
       }
