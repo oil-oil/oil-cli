@@ -1,12 +1,12 @@
 import { t, withLanguage, resolveLanguage, command, helpLines, skillLabel, planLabel, priceLabel as formatPrice } from './i18n.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readFile } from 'node:fs/promises';
+import { readFile, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { Output, CliError, ask, canPrompt, confirm } from './io.js';
 import { readAuth, logout as deleteConfig } from './config.js';
 import { Client, catalogNames, findSkill } from './client.js';
 import { openBrowser } from './browser.js';
-import { isSkillName, scan, inspectSkill, isDevelopmentDirectory, installationRoots, uniqueDirectories, canonicalDirectory, resolveDirectory, targetRoot, sameAgentRoots, freeReplacements, compare, updates, conflicts } from './skills.js';
+import { isSkillName, scan, inspectSkill, isDevelopmentDirectory, installationRoots, uniqueDirectories, canonicalDirectory, resolveDirectory, targetRoot, sameAgentRoots, freeReplacements, compare, updates, conflicts, duplicateCopies } from './skills.js';
 import { prepare, replaceAll } from './install.js';
 import { login, loadAuth, requireLogin } from './auth.js';
 import { requirePurchase } from './purchase.js';
@@ -70,6 +70,14 @@ const skippedInstallation = (item) => ({ name: item.name, path: item.path, reaso
 const skippedLines = (skipped) => skipped.map((item) => t(({ symbolic_link: 'skippedSymbolicLink', unrecognized_skill: 'skippedUnrecognizedSkill' })[item.reason] || 'skipped', { name: skillLabel(item.name), path: item.path }));
 const removedActions = (actions) => actions.filter((action) => action.remove || action.replacesFree);
 const removedLines = (actions) => removedActions(actions).map((action) => t('removedFree', { name: skillLabel(action.previousName), path: action.path }));
+const linkedLines = (links) => links.map((item) => t('linked', { name: skillLabel(item.name), path: item.path, target: item.target }));
+const duplicateLines = (copies) => copies.map((item) => t('duplicateCopies', { name: skillLabel(item.name), count: item.paths.length, next: command('install', item.name) }));
+async function lstatOrNull(file) {
+  try { return await lstat(file); }
+  catch (error) { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null; throw error; }
+}
+// 安装本身是链接时，更新它指向的真实目录，不把链接换成一份独立副本。
+const realInstallation = async (item) => (await lstatOrNull(item.path))?.isSymbolicLink() ? item.real_path : item.path;
 
 async function status(ctx) {
   await loadAuth(ctx);
@@ -78,6 +86,7 @@ async function status(ctx) {
   const installations = found.map((item) => ({ name: item.name, path: item.path, current: item.version, latest: versions[item.name].latest, development: item.development, real_path: item.real_path,
     update_available: !item.development && (!item.version || compare(item.version, versions[item.name].latest) < 0), updates: updates(item.version, versions[item.name]) }));
   const warnings = await conflicts(found, ctx.catalog);
+  warnings.push(...duplicateLines(duplicateCopies(found)));
   for (const item of found) {
     const history = versions[item.name].history;
     const oldest = history.filter((entry) => /^\d+\.\d+\.\d+$/.test(entry.version)).sort((a, b) => compare(a.version, b.version))[0];
@@ -113,7 +122,7 @@ async function list(ctx) {
 async function apply(ctx, actions, versions, { purchaseOnInactive = false } = {}) {
   const prepared = new Map();
   try {
-    for (const name of new Set(actions.filter((action) => !action.remove).map((action) => action.name))) {
+    for (const name of new Set(actions.filter((action) => !action.remove && !action.link).map((action) => action.name))) {
       const { product, paid } = findSkill(ctx.catalog, name);
       let item;
       try { item = await prepare(ctx.client, name, versions[name], ctx.token, paid, product, ctx.signal); }
@@ -124,7 +133,7 @@ async function apply(ctx, actions, versions, { purchaseOnInactive = false } = {}
       }
       prepared.set(name, item);
     }
-    return await replaceAll(actions.map((action) => ({ ...action, source: action.remove ? undefined : prepared.get(action.name).source })), { signal: ctx.signal, names: ctx.names });
+    return await replaceAll(actions.map((action) => ({ ...action, source: action.remove || action.link ? undefined : prepared.get(action.name).source })), { signal: ctx.signal, names: ctx.names });
   } finally {
     for (const item of prepared.values()) await item.cleanup().catch(() => {});
   }
@@ -182,30 +191,54 @@ async function install(ctx, name = ctx.options.skill) {
     roots = [targetRoot(answer)];
   }
   roots = await uniqueDirectories(roots);
-  if (ctx.interactive) ctx.output.write({ event: 'targets', paths: roots }, [t('targets'), ...roots]);
+  const found = (await scan(ctx.names, roots)).filter((item) => item.name === name);
+  // 第一个能放下这个 Skill 的目录放真实的一份，其余 Agent 用链接共享，更新一次全部生效。
+  // 同名位置被别的东西占着（例如受保护的链接）时顺延，不让其他 Agent 链到错误的内容上。
+  let primaryIndex = 0;
+  for (let i = 0; i < roots.length; i++) {
+    const directory = path.join(roots[i], name);
+    if (found.some((item) => sameDirectory(item.root, roots[i])) || !await lstatOrNull(directory) || (await inspectSkill(directory, ctx.names))?.name === name) { primaryIndex = i; break; }
+  }
+  const primaryRoot = roots[primaryIndex], linkRoots = roots.filter((root, index) => index !== primaryIndex);
+  if (ctx.interactive) ctx.output.write({ event: 'targets', paths: roots, primary: primaryRoot, links: linkRoots },
+    [t('targets'), primaryRoot, ...linkRoots.map((root) => t('targetLink', { path: root }))]);
   if (!await ctx.confirm(t('confirmInstall', { name: skillLabel(name) }), ctx.options.yes, ctx.interactive, ctx.signal, true)) {
     ctx.output.write({ cancelled: true }, [t('installCanceled')]); return 0;
   }
-  const found = await scan(ctx.names, roots);
-  const actions = [], skipped = [];
-  for (const root of roots) {
-    const matching = found.filter((item) => sameDirectory(item.root, root) && item.name === name);
-    const candidates = matching.length ? matching : [{ name, path: path.join(root, name), version: null }];
-    for (const item of candidates) {
-      if (await isDevelopmentDirectory(item.path)) { skipped.push(skippedInstallation(item)); continue; }
-      actions.push({ name, path: item.path, previousName: matching.length ? name : null, previousVersion: item.version });
+  const actions = [], skipped = [], links = [];
+  const primaries = found.filter((item) => sameDirectory(item.root, primaryRoot));
+  const candidates = primaries.length ? primaries : [{ name, path: path.join(primaryRoot, name), version: null }];
+  const target = path.resolve((candidates.find((item) => path.basename(item.path) === name) || candidates[0]).path);
+  for (const item of candidates) {
+    if (await isDevelopmentDirectory(item.path)) { skipped.push(skippedInstallation(item)); continue; }
+    actions.push({ name, path: primaries.length ? await realInstallation(item) : item.path, previousName: primaries.length ? name : null, previousVersion: item.version });
+  }
+  const targetKey = directoryKey(await canonicalDirectory(target));
+  for (const root of linkRoots) {
+    // 同名文件夹之外，别的文件夹名里装着同一个 Skill 的独立副本也换成链接。
+    const directories = [...new Set([path.join(root, name), ...found.filter((item) => sameDirectory(item.root, root)).map((item) => item.path)])];
+    for (const directory of directories) {
+      const info = await lstatOrNull(directory);
+      if (info && directoryKey(await canonicalDirectory(directory)) === targetKey) { links.push({ name, path: directory, target, existing: true }); continue; }
+      if (info && await isDevelopmentDirectory(directory)) { skipped.push(skippedInstallation({ name, path: directory })); continue; }
+      const current = info ? await inspectSkill(directory, ctx.names) : null;
+      actions.push({ name, path: directory, link: target, previousName: current?.name === name ? name : null, previousVersion: current?.version || null });
     }
   }
-  if (!actions.length) { ctx.output.write({ installations: [], removed: [], skipped, warnings: [] }, skippedLines(skipped)); return 0; }
-  if (paid) { await requireLogin(ctx); await requirePurchase(ctx, name); }
+  if (!actions.length) {
+    ctx.output.write({ installations: [], links, removed: [], skipped, warnings: [] }, [...linkedLines(links), ...skippedLines(skipped)]); return 0;
+  }
+  const downloads = actions.some((action) => !action.link);
+  if (paid && downloads) { await requireLogin(ctx); await requirePurchase(ctx, name); }
   const cleanup = await addFreeReplacements(ctx, actions);
   skipped.push(...cleanup.skipped.filter((item) => !skipped.some((existing) => sameDirectory(existing.path, item.path))));
   const versions = await ctx.client.versions(ctx.catalog);
   const warnings = await apply(ctx, actions, versions, { purchaseOnInactive: true });
   const installed = await scan(ctx.names, [...roots, ...cleanup.roots]);
   warnings.push(...await conflicts(installed, ctx.catalog));
-  const installations = actions.filter((action) => !action.remove).map((action) => ({ name, path: action.path,
+  const installations = actions.filter((action) => !action.remove && !action.link).map((action) => ({ name, path: action.path,
     previous: action.previousName === name ? action.previousVersion : null, version: versions[name].latest }));
+  links.push(...actions.filter((action) => action.link).map((action) => ({ name, path: action.path, target: action.link, existing: false, replaced_copy: action.previousName === name })));
   const removed = removedActions(actions).map((action) => action.path);
   let proHint = null;
   if (name === 'oil-ui' && actions.some((action) => !action.previousName) && !installed.some((item) => item.name === 'oil-ui-pro')) {
@@ -216,9 +249,9 @@ async function install(ctx, name = ctx.options.skill) {
       }
     } catch (error) { if (!(error instanceof CliError) || error.error !== 'skill_read') throw error; }
   }
-  ctx.output.write({ installations, removed, skipped, warnings, ...(proHint ? { pro_hint: proHint } : {}) }, [...installations.map((item) => item.previous && item.previous !== item.version
+  ctx.output.write({ installations, links, removed, skipped, warnings, ...(proHint ? { pro_hint: proHint } : {}) }, [...installations.map((item) => item.previous && item.previous !== item.version
     ? t('updated', { name: skillLabel(item.name), previous: item.previous, version: item.version, path: item.path })
-    : t('installed', { name: skillLabel(item.name), version: item.version, path: item.path })), ...removedLines(actions), ...skippedLines(skipped), ...warnings, proHint?.message]);
+    : t('installed', { name: skillLabel(item.name), version: item.version, path: item.path })), ...linkedLines(links), ...removedLines(actions), ...skippedLines(skipped), ...warnings, proHint?.message]);
   return 0;
 }
 
@@ -246,7 +279,7 @@ async function update(ctx) {
   }
   const versions = await ctx.client.versions(ctx.catalog);
   const pending = eligible.filter((item) => !item.version || compare(item.version, versions[item.name].latest) < 0);
-  const actions = pending.map((item) => ({ name: item.name, path: item.path, previousName: item.name, previousVersion: item.version }));
+  const actions = await Promise.all(pending.map(async (item) => ({ name: item.name, path: await realInstallation(item), previousName: item.name, previousVersion: item.version })));
   const cleanup = await addFreeReplacements(ctx, actions, eligible.filter((item) => item.name === 'oil-ui-pro'));
   skipped.push(...cleanup.skipped.filter((item) => !skipped.some((existing) => sameDirectory(existing.path, item.path))));
   const replacements = actions.filter((action) => !action.remove);
@@ -255,7 +288,9 @@ async function update(ctx) {
     ctx.output.write({ cancelled: true, removed: [], skipped, ...counts, status: 'cancelled' }, [t('updateCanceled'), ...skippedLines(skipped)]); return 0;
   }
   const warnings = await apply(ctx, actions, versions);
-  warnings.push(...await conflicts(await scan(ctx.names, [...all.map((item) => item.root), ...cleanup.roots]), ctx.catalog));
+  const after = await scan(ctx.names, [...all.map((item) => item.root), ...cleanup.roots]);
+  warnings.push(...await conflicts(after, ctx.catalog));
+  if (!ctx.options.path) warnings.push(...duplicateLines(duplicateCopies(after.filter((item) => !ctx.options.skill || item.name === ctx.options.skill))));
   const installations = actions.filter((action) => !action.remove).map((item) => ({ name: item.name, path: item.path, previous: item.previousVersion, version: versions[item.name].latest }));
   const removed = removedActions(actions).map((action) => action.path);
   ctx.output.write({ installations, removed, skipped, warnings, ...counts, updated_count: installations.length, status: installations.length ? 'updated' : 'up_to_date' }, [...(installations.length ? installations.map((item) => t('updated', { name: skillLabel(item.name), previous: item.previous || t('unknownVersion'), version: item.version, path: item.path })) : [t('upToDate')]), ...removedLines(actions), ...skippedLines(skipped), ...warnings]);

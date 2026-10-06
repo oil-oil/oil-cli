@@ -12,19 +12,83 @@ const events = (result) => {
 const data = (result) => events(result).at(-1);
 const absent = (file) => assert.rejects(access(file), { code: 'ENOENT' });
 
-test('无 --to、无 --yes，自动安装到所有本机 Agent；.agents 必须已有 skills', async (t) => {
+test('无 --to、无 --yes：Claude 放一份，其余本机 Agent 用链接共享；不自动写 .agents', async (t) => {
   const f = await fixture(t);
   for (const agent of ['claude', 'codex', 'cursor', 'agents']) await mkdir(path.join(f.home, `.${agent}`));
   await mkdir(path.join(f.cwd, '.claude', 'skills'), { recursive: true });
+  const primary = path.join(f.home, '.claude', 'skills', 'oil-ui');
+  const linked = ['codex', 'cursor'].map((agent) => path.join(f.home, `.${agent}`, 'skills', 'oil-ui'));
   let result = await f.run(['install', 'oil-ui', '--json']);
   assert.equal(result.code, 0, result.stdout);
-  assert.deepEqual(data(result).installations.map((i) => i.path), ['claude', 'codex', 'cursor'].map((agent) => path.join(f.home, `.${agent}`, 'skills', 'oil-ui')));
+  assert.deepEqual(data(result).installations.map((i) => i.path), [primary]);
+  assert.deepEqual(data(result).links.map((i) => [i.path, i.target, i.existing]), linked.map((directory) => [directory, primary, false]));
+  for (const directory of linked) {
+    assert((await lstat(directory)).isSymbolicLink());
+    assert.equal(await readDirectoryLink(directory), primary);
+  }
   assert.equal(result.trace.questions.length, 0);
   await absent(path.join(f.home, '.agents', 'skills'));
   await absent(path.join(f.cwd, '.claude', 'skills', 'oil-ui'));
   await mkdir(path.join(f.home, '.agents', 'skills'));
   result = await f.run(['install', 'oil-ui', '--json']);
-  assert.equal(data(result).installations.length, 4);
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(data(result).installations.map((i) => i.path), [primary]);
+  assert.deepEqual(data(result).links.map((i) => i.existing), [true, true]);
+  await absent(path.join(f.home, '.agents', 'skills', 'oil-ui'));
+});
+
+test('install 把其他 Agent 里的独立旧副本换成链接；status 提示多份副本，合并后不再提示', async (t) => {
+  const f = await fixture(t);
+  for (const agent of ['claude', 'cursor', 'workbuddy']) await writeSkill(path.join(f.home, `.${agent}`, 'skills'), 'oil-ui', '0.8.0');
+  const renamed = await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-ui', '0.9.0', 'my-ui');
+  let status = data(await f.run(['status', '--json']));
+  assert.equal(status.warnings.length, 1);
+  assert.match(status.warnings[0], /4 份独立副本.*install oil-ui/);
+  const result = await f.run(['install', 'oil-ui', '--json']);
+  assert.equal(result.code, 0, result.stdout);
+  const primary = path.join(f.home, '.claude', 'skills', 'oil-ui');
+  assert.deepEqual(data(result).installations.map((i) => [i.path, i.previous]), [[primary, '0.8.0']]);
+  const links = [path.join(f.home, '.codex', 'skills', 'oil-ui'), renamed, ...['cursor', 'workbuddy'].map((agent) => path.join(f.home, `.${agent}`, 'skills', 'oil-ui'))];
+  assert.deepEqual(data(result).links.map((i) => i.path).sort(), links.sort());
+  for (const directory of links) assert.equal(await readDirectoryLink(directory), primary);
+  assert.match(await readFile(path.join(renamed, 'SKILL.md'), 'utf8'), /0\.10\.0/);
+  status = data(await f.run(['status', '--json']));
+  assert.deepEqual(status.warnings, []);
+  assert.equal(status.installations.length, 1);
+});
+
+test('update 经由链接找到安装时更新真实目录，链接保持不变', async (t) => {
+  const f = await fixture(t);
+  const real = await writeSkill(path.join(f.home, '.agents', 'skills'), 'oil-ui', '0.8.0');
+  for (const agent of ['claude', 'codex']) {
+    await mkdir(path.join(f.home, `.${agent}`, 'skills'), { recursive: true });
+    await linkDirectory(real, path.join(f.home, `.${agent}`, 'skills', 'oil-ui'));
+  }
+  const result = await f.run(['update', '--json']);
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(data(result).updated_count, 1);
+  assert.match(await readFile(path.join(real, 'SKILL.md'), 'utf8'), /0\.10\.0/);
+  for (const agent of ['claude', 'codex']) {
+    const directory = path.join(f.home, `.${agent}`, 'skills', 'oil-ui');
+    assert((await lstat(directory)).isSymbolicLink());
+    assert.equal(await readDirectoryLink(directory), real);
+  }
+});
+
+test('开发目录作为主安装时，其他 Agent 直接链到开发目录，不下载也不改动开发目录', async (t) => {
+  const f = await fixture(t);
+  const repository = await writeSkill(path.join(f.home, '.claude', 'skills'), 'oil-ui-pro', '0.8.0');
+  await mkdir(path.join(repository, '.git'));
+  const copy = await writeSkill(path.join(f.home, '.cursor', 'skills'), 'oil-ui-pro', '0.7.0');
+  await mkdir(path.join(f.home, '.codex'));
+  const before = await snapshot(repository);
+  const result = await f.run(['install', 'oil-ui-pro', '--json'], { CI: 'true' });
+  assert.equal(result.code, 0, result.stdout);
+  assert.deepEqual(data(result).skipped, [{ name: 'oil-ui-pro', path: repository, reason: 'development_directory' }]);
+  assert.deepEqual(data(result).installations, []);
+  for (const directory of [path.join(f.home, '.codex', 'skills', 'oil-ui-pro'), copy]) assert.equal(await readDirectoryLink(directory), repository);
+  assert.deepEqual(await snapshot(repository), before);
+  assert.equal(f.state.requests.filter((r) => r.path.startsWith('/api/store/download/') || r.path === '/api/cli/device').length, 0);
 });
 
 test('自动检测只接受目录，允许 Agent 目录软链接；显式 --to 覆盖自动检测', async (t) => {
@@ -111,7 +175,7 @@ test('交互安装只确认安装，自动移除免费版；--yes 跳过安装�
 test('非交互四类命令缺令牌时直接设备码登录并继续，不需要 --yes', async (t) => {
   const f = await fixture(t);
   f.state.deviceStatuses = ['success'];
-  await writeSkill(path.join(f.home, '.agents', 'skills'), 'oil-doc-pro', '0.8.0');
+  await writeSkill(path.join(f.home, '.codex', 'skills'), 'oil-doc-pro', '0.8.0');
   for (const args of [
     ['install', 'oil-ui-pro', '--json'], ['update', 'oil-doc-pro', '--json'],
     ['subscribe', 'oil-doc-pro', '--plan', 'yearly', '--json'], ['manage', '--json'],
@@ -153,7 +217,8 @@ test('非交互订阅生效后自动装到所有检测位置；交互回车默�
   for (const agent of ['codex', 'cursor']) await mkdir(path.join(f.home, `.${agent}`));
   let result = await f.run(['subscribe', 'oil-ui-pro', '--json'], { OIL_TOKEN: INACTIVE });
   assert.equal(result.code, 0, result.stdout);
-  assert.equal(data(result).installations.length, 2);
+  assert.equal(data(result).installations.length, 1);
+  assert.deepEqual(data(result).links.map((item) => item.path), [path.join(f.home, '.cursor', 'skills', 'oil-ui-pro')]);
   assert.equal(result.trace.questions.length, 0);
   result = await f.run(['subscribe', 'oil-doc-pro'], { OIL_TOKEN: TOKEN }, { interactive: true, answers: ['', ''] });
   assert.equal(result.code, 0);

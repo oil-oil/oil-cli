@@ -43,8 +43,9 @@ test('免费安装到多个目标，能保留不认识的目录', async (t) => {
   const result = await f.run(['install', 'oil-ui', '--to', 'codex', '--to', 'agents', '--to', 'codex', '--yes', '--json']);
   assert.equal(result.code, 0);
   const value = data(result);
-  assert.equal(value.installations.length, 2);
+  assert.equal(value.installations.length, 1);
   assert(value.installations.every((i) => i.name === 'oil-ui' && i.version === '0.10.0'));
+  assert.deepEqual(value.links.map((i) => [i.path, i.target]), [[path.join(f.home, '.agents', 'skills', 'oil-ui'), path.join(root, 'oil-ui')]]);
   assert.deepEqual(await snapshot(other), before);
   assert.match(await readFile(path.join(root, 'oil-ui', 'SKILL.md'), 'utf8'), /0\.10\.0/);
   assert.equal(f.state.requests.find((req) => req.path.startsWith('/releases')).key, undefined);
@@ -448,7 +449,7 @@ test('subscribe 每 3 秒轮询账号，生效后非交互自动安装；传 pla
 
 test('subscribe 交互询问并安装；已解锁 409 可继续，免费和未知 plan 是用法错误', async (t) => {
   const f = await fixture(t);
-  let result = await f.run(['subscribe', 'oil-ui-pro'], { OIL_TOKEN: INACTIVE }, { terminal: true, interactive: true, answers: [true, 'agents', true] });
+  let result = await f.run(['subscribe', 'oil-ui-pro'], { OIL_TOKEN: INACTIVE }, { terminal: true, interactive: true, answers: [true, 'codex', true] });
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /已安装 Oil UI Pro/);
   assert.equal(result.trace.questions.length, 3);

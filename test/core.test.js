@@ -59,6 +59,34 @@ test('第二处替换中途失败时，两处旧目录的内容和权限都恢�
   assert.deepEqual(await readdir(path.join(directory, 'b')), ['oil-ui']);
 });
 
+test('创建链接中途失败时，主安装和被换成链接的旧副本都恢复', async (t) => {
+  const directory = await temp(t);
+  const primary = await writeSkill(path.join(directory, 'a'), 'oil-ui', '0.8.0');
+  const copy = await writeSkill(path.join(directory, 'b'), 'oil-ui', '0.9.0');
+  const source = await writeSkill(path.join(directory, 'source'), 'oil-ui', '0.10.0');
+  const before = await Promise.all([snapshot(primary), snapshot(copy)]);
+  const linkDirectory = async () => { throw Object.assign(new Error('injected'), { code: 'EPERM' }); };
+  await assert.rejects(replaceAll([{ path: primary, source, previousName: 'oil-ui' }, { path: copy, link: primary, previousName: 'oil-ui' }], { linkDirectory }), { error: 'replace', code: 1 });
+  assert.deepEqual(await snapshot(primary), before[0]);
+  assert.deepEqual(await snapshot(copy), before[1]);
+  assert.deepEqual(await readdir(path.join(directory, 'b')), ['oil-ui']);
+});
+
+test('链接目标和主安装不算互相包含；链接指向主安装', async (t) => {
+  const directory = await temp(t);
+  const primary = path.join(directory, 'a', 'oil-ui');
+  const link = path.join(directory, 'b', 'oil-ui');
+  await mkdir(path.dirname(link), { recursive: true });
+  await linkDirectory(primary, link);
+  const source = await writeSkill(path.join(directory, 'source'), 'oil-ui', '0.10.0');
+  // 已有的悬空链接不认识，不覆盖。
+  await assert.rejects(replaceAll([{ path: primary, source, previousName: null }, { path: link, link: primary, previousName: null }]), { error: 'occupied' });
+  await rm(link);
+  await replaceAll([{ path: primary, source, previousName: null }, { path: link, link: primary, previousName: null }]);
+  assert.equal(await readDirectoryLink(link), primary);
+  assert.match(await readFile(path.join(link, 'SKILL.md'), 'utf8'), /0\.10\.0/);
+});
+
 test('安装 Pro 时移除的免费版也跟随整批操作回滚', async (t) => {
   const directory = await temp(t);
   const root = path.join(directory, 'skills');

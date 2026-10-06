@@ -2,7 +2,7 @@ import { t } from './i18n.js';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { cp, lstat, mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readdir, rename, rm, symlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createGunzip } from 'node:zlib';
 import { Readable, Transform } from 'node:stream';
@@ -10,7 +10,7 @@ import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { CliError } from './io.js';
-import { inspectSkill, isDevelopmentDirectory, isLinkedInstallation, canonicalDirectory } from './skills.js';
+import { inspectSkill, isDevelopmentDirectory, isLinkedInstallation, logicalDirectory } from './skills.js';
 import { tarInvocation, directoryKey } from './platform.js';
 
 const exec = promisify(execFile);
@@ -190,8 +190,10 @@ async function exists(file) {
 }
 
 // 在目标文件系统上暂存新目录和备份，跨多个目标一起提交或回滚。
-// renameFile 可供测试注入真实的中途失败；CLI 使用系统 rename。
-export async function replaceAll(actions, { renameFile = rename, signal, names = [] } = {}) {
+// action.link 表示在 path 放一个指向主安装的目录链接（Windows 用 junction），而不是复制一份。
+// renameFile、linkDirectory 可供测试注入真实的中途失败；CLI 使用系统调用。
+const systemLink = (target, directory) => symlink(target, directory, process.platform === 'win32' ? 'junction' : 'dir');
+export async function replaceAll(actions, { renameFile = rename, linkDirectory = systemLink, signal, names = [] } = {}) {
   // 在暂存前检查整批目标；在每次 rename 前再检查，防止下载期间变成开发目录。
   const protect = async (action) => {
     const directory = action.path;
@@ -199,7 +201,7 @@ export async function replaceAll(actions, { renameFile = rename, signal, names =
     if (await isDevelopmentDirectory(directory)) throw new CliError(t('developmentProtected', { path: directory }), 1, 'development_directory', { path: directory });
   };
   for (const action of actions) await protect(action);
-  const paths = await Promise.all(actions.map(async (action) => directoryKey(await canonicalDirectory(action.path))));
+  const paths = await Promise.all(actions.map(async (action) => directoryKey(await logicalDirectory(action.path))));
   for (let i = 0; i < paths.length; i++) {
     for (let j = 0; j < paths.length; j++) {
       if (i === j) continue;
@@ -236,6 +238,10 @@ export async function replaceAll(actions, { renameFile = rename, signal, names =
       if (transaction.source) {
         transaction.incomingInfo = await lstat(transaction.incoming);
         await renameFile(transaction.incoming, transaction.path);
+        transaction.movedNew = true;
+      } else if (transaction.link) {
+        await linkDirectory(path.resolve(transaction.link), transaction.path);
+        transaction.incomingInfo = await lstat(transaction.path);
         transaction.movedNew = true;
       }
     }

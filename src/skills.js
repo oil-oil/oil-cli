@@ -121,6 +121,12 @@ export async function canonicalDirectory(directory) {
   }
 }
 
+// 只解析父目录：Skill 目录本身可能是指向主安装的链接，不能和主安装算成同一路径。
+export async function logicalDirectory(directory) {
+  const absolute = path.resolve(directory);
+  return path.join(await canonicalDirectory(path.dirname(absolute)), path.basename(absolute));
+}
+
 export async function uniqueDirectories(directories) {
   const seen = new Set(), result = [];
   for (const directory of directories) {
@@ -131,13 +137,14 @@ export async function uniqueDirectories(directories) {
 }
 
 // 安装目标只检测用户的 Agent 目录，不把当前项目的目录当作默认目标。
+// 第一个是主安装（优先 Claude），其余 Agent 用链接共享它；~/.agents 只在 --to agents 时使用。
 export async function installationRoots() {
   const roots = [];
-  for (const agent of ['claude', 'codex', 'cursor', 'agents', 'workbuddy']) {
+  for (const agent of ['claude', 'codex', 'cursor', 'workbuddy']) {
     const root = targetRoot(agent);
     const directory = path.dirname(root);
     try {
-      if ((await stat(agent === 'agents' ? root : directory)).isDirectory()) roots.push(root);
+      if ((await stat(directory)).isDirectory()) roots.push(root);
     } catch (error) {
       if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw new CliError(t('agentRead', { path: directory }), 1, 'skill_read');
     }
@@ -254,6 +261,15 @@ export async function scan(names, roots = discoveryRoots()) {
     }
   }
   return found;
+}
+
+// scan 已按真实路径去重，同名的多条记录就是多份互不相干的副本。
+// 只看用户级 Agent 目录：项目里的 .claude/skills 是有意的局部安装；开发目录也不算。
+export function duplicateCopies(found, env = process.env, platform = process.platform) {
+  const userRoots = new Set(agents.map((agent) => directoryKey(targetRoot(agent, env, platform), platform, null)));
+  const groups = new Map();
+  for (const item of found.filter((item) => !item.development && userRoots.has(directoryKey(item.root, platform, null)))) groups.set(item.name, [...(groups.get(item.name) || []), item.path]);
+  return [...groups].filter(([, paths]) => paths.length > 1).map(([name, paths]) => ({ name, paths }));
 }
 
 export function compare(a, b) {

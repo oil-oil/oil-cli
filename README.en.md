@@ -13,7 +13,7 @@ npx github:oil-oil/oil-cli status            # Show versions and account info
 npx github:oil-oil/oil-cli help              # List all commands
 ```
 
-Works with Claude Code, Codex, Cursor, WorkBuddy, and other agents. It finds their skill directories automatically, or you can choose one with `--to`. Output follows your system language; use `--lang zh` or `--lang en` to choose one. Runs on macOS, Linux, and Windows.
+Works with Claude Code, Codex, Cursor, WorkBuddy, and other agents. It finds their skill directories automatically, or you can choose one with `--to`. Only one copy is kept per machine: it goes in the Claude Code directory when available, and the other agents link to it, so one update covers all of them. `~/.agents/skills` is used only with `--to agents`. Output follows your system language; use `--lang zh` or `--lang en` to choose one. Runs on macOS, Linux, and Windows.
 
 ## License
 
