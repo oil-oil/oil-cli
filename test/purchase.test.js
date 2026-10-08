@@ -89,6 +89,23 @@ test('非交互付款超时的普通输出包含付款链接和指定重跑提�
   assert.equal(totalWait(result), 60000);
 });
 
+test('商店给出购买前提醒时，付款页前输出转告用户的一行并附开源版安装命令，JSON 和超时错误也带上', async (t) => {
+  const f = await fixture(t);
+  f.state.checkoutActiveAfter = Infinity;
+  f.state.checkoutNotice = 'Oil UI Pro 提供的是设计方法。';
+  await mkdir(path.join(f.home, '.codex'));
+  let result = await f.run(['install', 'oil-ui-pro'], { OIL_TOKEN: INACTIVE });
+  assert.equal(result.code, 3);
+  const line = '付款前请转告用户：Oil UI Pro 提供的是设计方法。开源版的安装命令：npx github:oil-oil/oil-cli install oil-ui';
+  const lines = result.stdout.trim().split('\n');
+  assert.equal(lines[lines.indexOf(line) + 1], `付款页面：${f.base}/checkout?session=1`);
+  result = await f.run(installArgs, { OIL_TOKEN: INACTIVE });
+  assert.equal(result.code, 3);
+  const [checkout, error] = result.stdout.trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(checkout.event, 'checkout'); assert.equal(checkout.notice, line);
+  assert.equal(error.error, 'payment_pending'); assert.equal(error.notice, line);
+});
+
 test('超时后付款，第二次运行同一命令直接安装，不创建付款会话或打开浏览器', async (t) => {
   const f = await fixture(t);
   f.state.checkoutActiveAfter = Infinity;

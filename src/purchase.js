@@ -2,7 +2,7 @@ import { CliError } from './io.js';
 import { isCI } from './auth.js';
 import { readPendingCheckout, savePendingCheckout, clearPendingCheckout } from './config.js';
 import { findSkill } from './client.js';
-import { t, skillLabel, planLabel, priceLabel } from './i18n.js';
+import { t, command, skillLabel, planLabel, priceLabel } from './i18n.js';
 
 const entitlement = (account, name) => account?.subscriptions.find((s) =>
   s.skill === name && ['active', 'canceling', 'past_due', 'lifetime', 'trialing'].includes(s.status));
@@ -69,6 +69,7 @@ export async function requirePurchase(ctx, name, { plan, force = false } = {}) {
     ctx.output.write({ event: 'subscribed', skill: name, ...(subscription ? { subscription } : {}), ...extra }, [t('purchased', { name: skillLabel(name) })]);
   };
   const previousId = checkout?.id;
+  let notice = null;
   if (!checkout || !state || (state.status === 'open' && !state.paid)) {
     try {
       checkout = await ctx.client.request('/api/store/checkout', { method: 'POST', token: ctx.token,
@@ -86,6 +87,10 @@ export async function requirePurchase(ctx, name, { plan, force = false } = {}) {
       if (typeof checkout.id !== 'string' || !checkout.id || typeof checkout.reused !== 'boolean'
         || !['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
     } catch { throw new CliError(t('invalidCheckout'), 1, 'invalid_response'); }
+    // 商店给的购买前提醒：让 Agent 在用户付款前转告，并附上免费开源版的安装命令
+    if (typeof checkout.notice === 'string' && checkout.notice.trim()) {
+      notice = t('purchaseNotice', { notice: checkout.notice.trim() + (product.free ? t('freeInstall', { next: command('install', product.free.skill) }) : '') });
+    }
     // 先落盘，再打开浏览器；中断和超时后都能恢复。
     await savePendingCheckout({ id: checkout.id, url: checkout.url, skill: name, plan: selectedPlan, ...(Number.isFinite(checkout.amount) && checkout.currency ? { amount: checkout.amount, currency: checkout.currency } : {}) }, ctx.token, ctx.client.base);
   }
@@ -97,8 +102,8 @@ export async function requirePurchase(ctx, name, { plan, force = false } = {}) {
   const warnings = opened || processing ? [] : [t('browserWarning')];
   const message = t('checkoutSummary', { name: details.product_name, price: t('pricePlan', { price: details.price_label, plan: details.purchase_description }) });
   ctx.output.write({ event: 'checkout', skill: name, id: checkout.id, url: checkout.url, reused: resumed || checkout.reused, resumed, opened, warnings, ...details, message,
-    max_wait_seconds: waitMs / 1000, next_command: ctx.nextCommand },
-    [message, processing ? t('paymentProcessing') : t('paymentPage', { url: checkout.url }), ...warnings,
+    ...(notice ? { notice } : {}), max_wait_seconds: waitMs / 1000, next_command: ctx.nextCommand },
+    [message, notice, processing ? t('paymentProcessing') : t('paymentPage', { url: checkout.url }), ...warnings,
       t('paymentWait', { duration: t(ctx.terminal ? 'fifteenMinutes' : 'sixtySeconds') })]);
   while (ctx.now() < deadline) {
     await ctx.sleep(Math.min(3000, deadline - ctx.now()), undefined, { signal: ctx.signal });
@@ -116,5 +121,5 @@ export async function requirePurchase(ctx, name, { plan, force = false } = {}) {
       throw new CliError(t('expiredCheckout'), 3, 'payment_pending', { skill: name, id: checkout.id, url: checkout.url, purchase_url: checkout.url, next_command: ctx.nextCommand, ...details });
     }
   }
-  throw pending(checkout.url, { opened, max_wait_seconds: waitMs / 1000 });
+  throw pending(checkout.url, { opened, max_wait_seconds: waitMs / 1000, ...(notice ? { notice } : {}) });
 }

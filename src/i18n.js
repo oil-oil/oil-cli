@@ -124,6 +124,8 @@ export const dictionary = {
   purchased: ['已购买 {name}。', 'Purchased {name}.'],
   checkoutSummary: ['{name}：{price}', '{name}: {price}'],
   paymentPage: ['付款页面：{url}', 'Payment page: {url}'],
+  purchaseNotice: ['付款前请转告用户：{notice}', 'Before the user pays, tell them: {notice}'],
+  freeInstall: ['开源版的安装命令：{next}', ' Open-source install command: {next}'],
   paymentWait: ['等待购买生效，每 3 秒检查一次；最长等待 {duration}，按 Ctrl+C 取消。', 'Checking your purchase every 3 seconds for up to {duration}; press Ctrl+C to cancel.'],
   expiredCheckout: ['付款页面已过期，请重新运行刚才的命令。', 'The payment page has expired. Run the same command again.'],
   invalidCheckout: ['付款信息不完整，请重试。', 'Payment details are incomplete. Please retry.'],
