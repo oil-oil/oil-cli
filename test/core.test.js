@@ -9,7 +9,7 @@ import { replaceAll as replace, validateArchive } from '../src/install.js';
 import { Output } from '../src/io.js';
 import { configPath } from '../src/config.js';
 import { openBrowser } from '../src/browser.js';
-import { writeSkill, snapshot, TOKEN, pack, linkDirectory, readDirectoryLink } from './fixture.js';
+import { writeSkill, snapshot, TOKEN, pack, linkDirectory, readDirectoryLink, fixture } from './fixture.js';
 
 const replaceAll = (actions, options = {}) => replace(actions, { names: ['oil-ui', 'oil-ui-pro'], ...options });
 
@@ -250,6 +250,24 @@ test('目录接受数组和 products/catalog 外层、Skill 字符串或对象�
   assert.throws(() => normalizeCatalog({}), { error: 'invalid_response' });
 });
 
+test('versions 默认要求完整目录；显式必需列表只放宽非目标缺项', async () => {
+  const { Client, normalizeCatalog } = await import('../src/client.js');
+  const catalog = normalizeCatalog([{ id: 'sample', name: 'Sample', free: 'sample-free', paid: 'sample-pro', prices: {} }]);
+  const complete = { skills: {
+    'sample-free': { latest: '1.2.3', history: [] },
+    'sample-pro': { latest: '1.2.3', history: [] },
+  } };
+  const client = Object.create(Client.prototype);
+  client.request = async () => complete;
+  assert.deepEqual(await client.versions(catalog), complete.skills);
+
+  const partial = { skills: { 'sample-free': { latest: '1.2.3', history: [] } } };
+  client.request = async () => partial;
+  await assert.rejects(client.versions(catalog), { error: 'invalid_response' });
+  assert.deepEqual(await client.versions(catalog, ['sample-free']), partial.skills);
+  await assert.rejects(client.versions(catalog, ['sample-pro']), { error: 'invalid_response' });
+});
+
 test('服务返回的陌生令牌即使带省略号也只能显示前 8 字符', () => {
   const output = new Output(false, 'status');
   assert.equal(output.redact('oil_UnrecognizedSecretToken123…'), 'oil_Unre…');
@@ -285,4 +303,51 @@ test('替换前重查 .git：处理中途出现开发目录时，已完成目标
   assert.deepEqual(await snapshot(first), firstBefore);
   assert.equal(await readFile(path.join(second, 'SKILL.md'), 'utf8'), secondCode);
   assert.equal(await readFile(path.join(second, '.git'), 'utf8'), 'gitdir: preserved');
+});
+
+test('versions 省略可选 Oil Tone 时 Pro 安装、状态、列表和全量更新仍可用', async (t) => {
+  const f = await fixture(t);
+  f.state.catalog.push({ id: 'oil-tone', name: 'Oil Tone Pro', summary: '润色文案。', free: 'oil-tone-pro', paid: null, prices: {} });
+  f.state.omitVersions.push('oil-tone-pro');
+  const env = { OIL_TOKEN: TOKEN };
+
+  const installed = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--json'], env);
+  assert.equal(installed.code, 0, installed.stderr || installed.stdout);
+  assert.equal(JSON.parse(installed.stdout).installations[0].version, '0.10.0');
+
+  const status = await f.run(['status', '--json'], env);
+  assert.equal(status.code, 0, status.stderr || status.stdout);
+  assert.equal(JSON.parse(status.stdout).installations[0].latest, '0.10.0');
+  const listing = await f.run(['list', '--json'], env);
+  assert.equal(listing.code, 0, listing.stderr || listing.stdout);
+  assert(JSON.parse(listing.stdout).skills.some((skill) => skill.skill === 'oil-tone-pro'));
+
+  f.state.latest = '0.11.0';
+  const updated = await f.run(['update', '--yes', '--json'], env);
+  assert.equal(updated.code, 0, updated.stderr || updated.stdout);
+  const result = JSON.parse(updated.stdout);
+  assert.equal(result.updated_count, 1);
+  assert.equal(result.installations[0].version, '0.11.0');
+});
+
+test('versions 缺少更新目标或包含损坏条目时拒绝对应命令', async (t) => {
+  const missing = await fixture(t);
+  missing.state.catalog.push({ id: 'oil-tone', name: 'Oil Tone Pro', summary: '润色文案。', free: 'oil-tone-pro', paid: null, prices: {} });
+  missing.state.omitVersions.push('oil-tone-pro', 'oil-ui-pro');
+  const pro = await writeSkill(path.join(missing.home, '.codex', 'skills'), 'oil-ui-pro', '0.8.0');
+  const missingResult = await missing.run(['update', 'oil-ui-pro', '--path', pro, '--json']);
+  assert.equal(missingResult.code, 1);
+  assert.equal(JSON.parse(missingResult.stdout).error, 'invalid_response');
+  assert.match(JSON.parse(missingResult.stdout).message, /Oil UI Pro/);
+  assert.match(await readFile(path.join(pro, 'SKILL.md'), 'utf8'), /0\.8\.0/);
+
+  const damaged = await fixture(t);
+  damaged.state.catalog.push({ id: 'oil-tone', name: 'Oil Tone Pro', summary: '润色文案。', free: 'oil-tone-pro', paid: null, prices: {} });
+  damaged.state.omitVersions.push('oil-tone-pro');
+  damaged.state.versionOverrides['oil-doc-pro'] = { latest: 'invalid' };
+  const damagedResult = await damaged.run(['install', 'oil-ui-pro', '--to', 'codex', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(damagedResult.code, 1);
+  assert.equal(JSON.parse(damagedResult.stdout).error, 'invalid_response');
+  assert.match(JSON.parse(damagedResult.stdout).message, /oil-doc-pro/);
+  await assert.rejects(access(path.join(damaged.home, '.codex', 'skills', 'oil-ui-pro')), { code: 'ENOENT' });
 });

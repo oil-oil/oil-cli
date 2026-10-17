@@ -103,13 +103,21 @@ export class Client {
     }
   }
   async catalog() { return normalizeCatalog(await this.request('/api/store/catalog')); }
-  async versions(catalog) {
+  async versions(catalog, requiredNames = catalogNames(catalog)) {
     const data = await this.request('/api/store/versions');
     const skills = data?.skills ?? data;
-    for (const name of catalogNames(catalog)) {
-      const release = skills?.[name];
+    const names = catalogNames(catalog);
+    if (!skills || typeof skills !== 'object' || Array.isArray(skills)) throw invalid(t('invalidVersions', { name: skillLabel(names[0] || t('thisSkill')) }));
+    const required = new Set(requiredNames);
+    for (const name of names) {
+      if (!Object.hasOwn(skills, name)) {
+        if (required.has(name)) throw invalid(t('invalidVersions', { name: skillLabel(name) }));
+        continue;
+      }
+      const release = skills[name];
       if (!release || !isVersion(release.latest) || !Array.isArray(release.history)) throw invalid(t('invalidVersions', { name: skillLabel(name) }));
     }
+    for (const name of required) if (!names.includes(name)) throw invalid(t('invalidVersions', { name: skillLabel(name) }));
     return skills;
   }
   async me(token, options = {}) {
