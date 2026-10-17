@@ -92,7 +92,7 @@ export async function fixture(t) {
   for (const name of ['oil-ui', 'oil-ui-pro', 'oil-doc', 'oil-doc-pro']) {
     for (const version of ['0.10.0', '0.11.0']) releases[`${name}:${version}`] = await release(temporary, name, version);
   }
-  const state = { catalog: structuredClone(CATALOG), latest: '0.10.0', badChecksum: false, missingChecksum: false, proBadChecksum: false, paidMissingChecksum: false,
+  const state = { catalog: structuredClone(CATALOG), latest: '0.10.0', versionOverrides: {}, omitVersions: [], badChecksum: false, missingChecksum: false, proBadChecksum: false, paidMissingChecksum: false,
     deviceStatuses: ['authorization_pending', 'success'], devicePolls: 0, deviceRequests: 0, interval: 5, expiresIn: 600, deviceApproved: false, requireApproval: false,
     checkoutPolls: 0, checkoutRequests: 0, checkoutActiveAfter: 2, checkoutAlreadyActive: false, downloadInactiveCount: 0,
     checkoutStatusPolls: 0, checkoutStatusActiveAfter: Infinity, checkoutCreated: 0, sessions: new Map(),
@@ -127,9 +127,11 @@ export async function fixture(t) {
         for (const product of state.catalog) for (const type of ['free', 'paid']) {
           const name = typeof product[type] === 'string' ? product[type] : product[type]?.skill;
           if (!name) continue;
+          if (state.omitVersions.includes(name)) continue;
           const archive = releases[`${name}:${state.latest}`];
           skills[name] = { latest: state.latest, published_at: '2026-10-02T08:00:00Z', history,
-            ...(type === 'free' ? { download_url: `${base}/releases/${name}-${state.latest}.tar.gz`, sha256: state.missingChecksum ? null : state.badChecksum ? '0'.repeat(64) : archive?.sha256 } : {}) };
+            ...(type === 'free' ? { download_url: `${base}/releases/${name}-${state.latest}.tar.gz`, sha256: state.missingChecksum ? null : state.badChecksum ? '0'.repeat(64) : archive?.sha256 } : {}),
+            ...state.versionOverrides[name] };
         }
         return json(res, 200, { skills });
       }

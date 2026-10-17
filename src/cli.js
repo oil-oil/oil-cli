@@ -82,7 +82,7 @@ const realInstallation = async (item) => (await lstatOrNull(item.path))?.isSymbo
 async function status(ctx) {
   await loadAuth(ctx);
   const found = await scan(ctx.names);
-  const versions = await ctx.client.versions(ctx.catalog);
+  const versions = await ctx.client.versions(ctx.catalog, found.map((item) => item.name));
   const installations = found.map((item) => ({ name: item.name, path: item.path, current: item.version, latest: versions[item.name].latest, development: item.development, real_path: item.real_path,
     update_available: !item.development && (!item.version || compare(item.version, versions[item.name].latest) < 0), updates: updates(item.version, versions[item.name]) }));
   const warnings = await conflicts(found, ctx.catalog);
@@ -232,7 +232,7 @@ async function install(ctx, name = ctx.options.skill) {
   if (paid && downloads) { await requireLogin(ctx); await requirePurchase(ctx, name); }
   const cleanup = await addFreeReplacements(ctx, actions);
   skipped.push(...cleanup.skipped.filter((item) => !skipped.some((existing) => sameDirectory(existing.path, item.path))));
-  const versions = await ctx.client.versions(ctx.catalog);
+  const versions = await ctx.client.versions(ctx.catalog, [name]);
   const warnings = await apply(ctx, actions, versions, { purchaseOnInactive: true });
   const installed = await scan(ctx.names, [...roots, ...cleanup.roots]);
   warnings.push(...await conflicts(installed, ctx.catalog));
@@ -277,7 +277,7 @@ async function update(ctx) {
     const warnings = await conflicts(all, ctx.catalog);
     ctx.output.write({ installations: [], removed: [], skipped, warnings, ...counts, status: found.length ? 'skipped' : 'no_installations' }, [...(found.length ? [] : [t('noInstallations')]), ...skippedLines(skipped), ...warnings]); return 0;
   }
-  const versions = await ctx.client.versions(ctx.catalog);
+  const versions = await ctx.client.versions(ctx.catalog, eligible.map((item) => item.name));
   const pending = eligible.filter((item) => !item.version || compare(item.version, versions[item.name].latest) < 0);
   const actions = await Promise.all(pending.map(async (item) => ({ name: item.name, path: await realInstallation(item), previousName: item.name, previousVersion: item.version })));
   const cleanup = await addFreeReplacements(ctx, actions, eligible.filter((item) => item.name === 'oil-ui-pro'));
