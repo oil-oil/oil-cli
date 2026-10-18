@@ -29,7 +29,7 @@ test('非交互最多等待 60 秒，保存权限 600 的待领取记录，退�
   assert.deepEqual(saved, { pending_device: {
     device_code: f.state.deviceCode, user_code: f.state.userCode,
     verification_uri: `${f.base}/device/`, verification_uri_complete: `${f.base}/device/?code=${f.state.userCode}`,
-    expires_at: 600000, interval: 5,
+    expires_at: 600000, interval: 5, api: f.base,
   } });
   assert.equal((await stat(f.configFile)).mode & 0o777, configMode);
   assert.match(result.stdout, /没能自动打开浏览器/);
@@ -62,7 +62,7 @@ test('非交互最多等待 60 秒，保存权限 600 的待领取记录，退�
 test('第二次运行领取同一设备码，保存令牌、清掉待领取记录并继续安装', async (t) => {
   const f = await fixture(t);
   f.state.requireApproval = true;
-  const root = path.join(f.home, '.codex', 'skills');
+  const root = path.join(f.home, '.agents', 'skills');
   const free = await writeSkill(root, 'oil-ui', '0.8.0');
   const args = ['install', 'oil-ui-pro', '--json'];
   const first = await f.run(args);

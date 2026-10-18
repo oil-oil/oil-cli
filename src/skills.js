@@ -137,16 +137,31 @@ export async function uniqueDirectories(directories) {
 }
 
 // 安装目标只检测用户的 Agent 目录，不把当前项目的目录当作默认目标。
-// 第一个是主安装（优先 Claude），其余 Agent 用链接共享它；~/.agents 只在 --to agents 时使用。
+// 第一个是主安装（优先 Claude），其余 Agent 用链接共享它；默认使用 ~/.agents/skills，~/.codex/skills 只在 --to codex 或设置 CODEX_HOME 时使用。
 export async function installationRoots() {
   const roots = [];
-  for (const agent of ['claude', 'codex', 'cursor', 'workbuddy']) {
-    const root = targetRoot(agent);
-    const directory = path.dirname(root);
+  const hasDirectory = async (directory) => {
     try {
-      if ((await stat(directory)).isDirectory()) roots.push(root);
+      return (await stat(directory)).isDirectory();
     } catch (error) {
       if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw new CliError(t('agentRead', { path: directory }), 1, 'skill_read');
+      return false;
+    }
+  };
+  for (const agent of ['claude', 'agents', 'cursor', 'workbuddy']) {
+    const root = targetRoot(agent);
+    const directory = path.dirname(root);
+    if (agent === 'agents') {
+      if (process.env.CODEX_HOME) {
+        const codexRoot = targetRoot('codex');
+        if (await hasDirectory(path.dirname(codexRoot))) roots.push(codexRoot);
+      }
+      const home = userHome();
+      if (await hasDirectory(directory) || (!process.env.CODEX_HOME && await hasDirectory(path.join(home, '.codex'))) || await hasDirectory(path.join(home, '.dsh'))) {
+        roots.push(root);
+      }
+    } else if (await hasDirectory(directory)) {
+      roots.push(root);
     }
   }
   return roots;

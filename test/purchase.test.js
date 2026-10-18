@@ -15,7 +15,7 @@ const totalWait = (result) => result.trace.delays.reduce((sum, ms) => sum + ms, 
 
 test('同一条安装命令完成登录 → 未买目标 Skill → 打开付款页 → 轮询解锁 → 安装', async (t) => {
   const f = await fixture(t);
-  const root = path.join(f.home, '.codex', 'skills');
+  const root = path.join(f.home, '.agents', 'skills');
   const free = await writeSkill(root, 'oil-ui', '0.8.0');
   f.state.requireApproval = true;
   f.state.deviceToken = INACTIVE;
@@ -169,7 +169,7 @@ test('checkout 409 already_active 当作已解锁，me 仍未列出授权也直�
 
 test('me 已解锁但下载返回 402 时购买，轮询解锁后重试下载并安装', async (t) => {
   const f = await fixture(t);
-  const root = path.join(f.home, '.codex', 'skills');
+  const root = path.join(f.home, '.agents', 'skills');
   const free = await writeSkill(root, 'oil-ui', '0.8.0');
   f.state.downloadInactiveCount = 1;
   const result = await f.run(installArgs, { OIL_TOKEN: TOKEN, OIL_TEST_BROWSER: 'approve' });

@@ -182,9 +182,10 @@ async function install(ctx, name = ctx.options.skill) {
   const { paid } = findSkill(ctx.catalog, name);
   let roots = ctx.options.to.length ? [...new Set(ctx.options.to.map((value) => targetRoot(value)))] : await installationRoots();
   if (!roots.length) {
-    const next = ctx.options.command === 'install' ? `${ctx.nextCommand} --to codex` : command('install', name, '--to', 'codex',
+    const defaultAgent = process.env.CODEX_HOME ? 'codex' : 'agents';
+    const next = ctx.options.command === 'install' ? `${ctx.nextCommand} --to ${defaultAgent}` : command('install', name, '--to', defaultAgent,
       ...(ctx.options.json ? ['--json'] : []), ...(ctx.options.lang ? ['--lang', ctx.options.lang] : []));
-    const details = { recommended_path: targetRoot('codex'), recommended_command: next, next_command: next };
+    const details = { recommended_path: targetRoot(defaultAgent), recommended_command: next, next_command: next };
     if (!ctx.interactive) throw new CliError(t('missingTarget', { next }), 2, 'missing_target', details);
     const answer = await ctx.ask(t('askTarget'), ctx.signal);
     if (!answer) throw new CliError(t('noTarget', { next }), 2, 'missing_target', details);
