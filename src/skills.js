@@ -4,8 +4,8 @@ import path from 'node:path';
 import { CliError } from './io.js';
 import { pathsFor, userHome, directoryKey } from './platform.js';
 
-const agents = ['claude', 'codex', 'agents', 'cursor', 'workbuddy'];
-const projectAgents = ['claude', 'agents', 'codex'];
+const agents = ['claude', 'codex', 'agents', 'cursor', 'workbuddy', 'dsh'];
+const projectAgents = ['claude', 'agents', 'codex', 'dsh'];
 
 export const isSkillName = (value) => typeof value === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(value);
 export const isVersion = (value) => typeof value === 'string' && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value);
@@ -137,7 +137,8 @@ export async function uniqueDirectories(directories) {
 }
 
 // 安装目标只检测用户的 Agent 目录，不把当前项目的目录当作默认目标。
-// 第一个是主安装（优先 Claude），其余 Agent 用链接共享它；默认使用 ~/.agents/skills，~/.codex/skills 只在 --to codex 或设置 CODEX_HOME 时使用。
+// 第一个是主安装（优先 Claude），其余 Agent 用链接共享它；Codex 和 dsh 默认使用 ~/.agents/skills。
+// ~/.codex/skills、~/.dsh/skills 可显式指定；CODEX_HOME 仍作为 Codex 的默认目标。
 export async function installationRoots() {
   const roots = [];
   const hasDirectory = async (directory) => {

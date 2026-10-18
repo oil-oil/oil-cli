@@ -25,7 +25,7 @@ test('Windows 主目录优先 USERPROFILE，再 HOME；POSIX 优先 HOME', () =>
   assert.equal(resolveDirectory('~/.workbuddy/skills', windows, 'win32'), `${windows.USERPROFILE}\\.workbuddy\\skills`);
   assert.equal(resolveDirectory('~\\.claude\\skills', windows, 'win32'), `${windows.USERPROFILE}\\.claude\\skills`);
   assert.equal(resolveDirectory('custom skills', windows, 'win32', 'D:\\Project'), 'D:\\Project\\custom skills');
-  for (const agent of ['claude', 'codex', 'agents', 'cursor', 'workbuddy']) assert.equal(targetRoot(agent, windows, 'win32'), `${windows.USERPROFILE}\\.${agent}\\skills`);
+  for (const agent of ['claude', 'codex', 'agents', 'cursor', 'workbuddy', 'dsh']) assert.equal(targetRoot(agent, windows, 'win32'), `${windows.USERPROFILE}\\.${agent}\\skills`);
 });
 
 test('Windows CODEX_HOME 支持跨盘、UNC、~ 和相对目录，配置固定使用 APPDATA', () => {
@@ -39,11 +39,13 @@ test('Windows CODEX_HOME 支持跨盘、UNC、~ 和相对目录，配置固定�
   assert.throws(() => configPath({ USERPROFILE: windows.USERPROFILE }, 'win32'), { error: 'failed' });
 });
 
-test('Windows 扫描范围包含五个用户目录和三个项目目录，WorkBuddy 仅用户级', () => {
+test('Windows 扫描范围包含六个用户目录和四个项目目录，WorkBuddy 仅用户级', () => {
   const roots = discoveryRoots(windows, 'win32', 'D:\\Project');
-  assert.equal(roots.length, 8);
+  assert.equal(roots.length, 10);
   assert(roots.includes(`${windows.USERPROFILE}\\.workbuddy\\skills`));
   assert(roots.includes('D:\\Project\\.codex\\skills'));
+  assert(roots.includes(`${windows.USERPROFILE}\\.dsh\\skills`));
+  assert(roots.includes('D:\\Project\\.dsh\\skills'));
   assert(!roots.includes('D:\\Project\\.workbuddy\\skills'));
   assert(!roots.includes('D:\\Project\\.cursor\\skills'));
 });
