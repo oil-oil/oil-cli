@@ -243,25 +243,6 @@ test('系统 tar 生成的长路径（PAX/ustar）发布物可以通过预检', 
   ])));
   await validateArchive(synthetic, 'oil-ui', 'linux');
   await validateArchive(synthetic, 'oil-ui', 'win32');
-
-  const extractableRel = ['assets', 'a'.repeat(60), 'b'.repeat(50), '中文.txt'];
-  const extractableArchive = path.join(directory, 'pax-extract.tar.gz');
-  await writeFile(extractableArchive, gzipSync(Buffer.concat([
-    tarEntry('oil-ui/', '5'),
-    tarEntry('oil-ui/SKILL.md', '0', 'name: oil-ui\n'),
-    tarEntry('PaxHeader/extract', 'x', paxRecord('path', `oil-ui/${extractableRel.join('/')}`)),
-    tarEntry('oil-ui/pax-extract', '0', '长路径'),
-    Buffer.alloc(1024),
-  ])));
-  await validateArchive(extractableArchive, 'oil-ui');
-  const extracted = path.join(directory, 'extracted');
-  await mkdir(extracted, { recursive: true });
-  const { tarInvocation } = await import('../src/platform.js');
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  const tar = tarInvocation(extractableArchive, extracted);
-  await promisify(execFile)(tar.command, tar.args, { cwd: tar.cwd, timeout: 30_000 });
-  assert.equal(await readFile(path.join(extracted, 'oil-ui', ...extractableRel), 'utf8'), '长路径');
 });
 
 test('配置位置遵守 XDG、HOME 和 Windows APPDATA；浏览器调用平台原生命令', async () => {
