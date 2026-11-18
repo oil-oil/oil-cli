@@ -275,7 +275,7 @@ export async function fixture(t) {
   });
   const close = async () => {
     await new Promise((resolve, reject) => { server.close((err) => err ? reject(err) : resolve()); server.closeAllConnections(); });
-    await rm(temporary, { recursive: true, force: true });
+    await rm(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
   t?.after(close);
   return { temporary, home, cwd, config, configFile, mockBin, env, base, state, releases, run, close };
