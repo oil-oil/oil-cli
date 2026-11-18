@@ -35,7 +35,34 @@ export const findSkill = (catalog, name) => {
 };
 
 export const DEFAULT_API = 'https://ui.oiloil.org';
+export const DEFAULT_DOWNLOAD_TIMEOUT_MS = 300_000;
+const MAX_DOWNLOAD_TIMEOUT_MS = 86_400_000;
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+export function downloadTimeoutMs(env = process.env) {
+  const raw = env.OIL_DOWNLOAD_TIMEOUT;
+  if (raw === undefined || !raw.trim()) return DEFAULT_DOWNLOAD_TIMEOUT_MS;
+  const match = /^([1-9]\d*)(ms|s)?$/i.exec(raw.trim());
+  if (!match) throw new CliError(t('invalidDownloadTimeout'), 2, 'usage');
+  const value = Number(match[1]);
+  const ms = match[2]?.toLowerCase() === 'ms' ? value : value * 1000;
+  if (!Number.isSafeInteger(ms) || ms < 1 || ms > MAX_DOWNLOAD_TIMEOUT_MS) throw new CliError(t('invalidDownloadTimeout'), 2, 'usage');
+  return ms;
+}
+
+export function validateDownloadTarget(location, baseAddress) {
+  if (!location) return null;
+  try {
+    const base = new URL(baseAddress);
+    const target = new URL(location, base);
+    if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) return null;
+    if (base.protocol === 'https:' && target.protocol !== 'https:') return null;
+    if (target.protocol === 'http:' && !LOCAL_HOSTS.has(target.hostname)) return null;
+    return target;
+  } catch {
+    return null;
+  }
+}
 
 // 接口地址：只允许 HTTPS，HTTP 只留给本机调试，免得令牌明文发出去
 export function apiBase(env = process.env) {
@@ -62,23 +89,97 @@ export class Client {
   }
   async request(route, { token, method = 'GET', body, download = false, skill, product, timeoutMs = 30_000 } = {}) {
     if (token && /[\r\n\0]/.test(token)) throw new CliError(t('invalidToken'), 3, 'unauthorized');
+    const budgetMs = download ? downloadTimeoutMs() : timeoutMs;
+    const explicitDownloadTimeout = download && Boolean(process.env.OIL_DOWNLOAD_TIMEOUT?.trim());
+    const startedAt = Date.now();
     const controller = new AbortController();
+    let timedOut = false;
+    let activeTimeoutMs = budgetMs;
     const abort = () => controller.abort();
     if (this.signal.aborted) abort();
     this.signal.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(abort, download ? 120_000 : timeoutMs);
-    const dispose = () => { clearTimeout(timer); this.signal.removeEventListener('abort', abort); };
+    const timer = setTimeout(() => { timedOut = true; activeTimeoutMs = budgetMs; abort(); }, budgetMs);
+    const hopCleanups = [];
+    const dispose = () => {
+      clearTimeout(timer);
+      this.signal.removeEventListener('abort', abort);
+      while (hopCleanups.length) hopCleanups.pop()();
+    };
+    const fetchHop = async (hopUrl, hopInit) => {
+      const hopController = new AbortController();
+      const onAbort = () => hopController.abort();
+      if (controller.signal.aborted) hopController.abort();
+      else {
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        hopCleanups.push(() => controller.signal.removeEventListener('abort', onAbort));
+      }
+      const hopBudget = download
+        ? Math.min(explicitDownloadTimeout ? budgetMs : 120_000, Math.max(1, budgetMs - (Date.now() - startedAt)))
+        : timeoutMs;
+      const hopTimer = setTimeout(() => { timedOut = true; activeTimeoutMs = hopBudget; hopController.abort(); }, hopBudget);
+      try {
+        return await fetch(hopUrl, { ...hopInit, signal: hopController.signal });
+      } finally {
+        clearTimeout(hopTimer);
+      }
+    };
+    const followDownloadRedirects = async (firstResponse, firstUrl, hopHeaders, initialStage = 'cdn_redirect') => {
+      let current = firstResponse;
+      let currentUrl = firstUrl;
+      let stage = initialStage;
+      for (let hops = 0; hops < 5; hops += 1) {
+        const location = current.headers.get('location');
+        await current.body?.cancel().catch(() => {});
+        const target = validateDownloadTarget(location, currentUrl);
+        if (!target) throw new CliError(t('downloadFailed'), 1, 'download', { stage });
+        currentUrl = target.href;
+        current = await fetchHop(currentUrl, { method: 'GET', headers: hopHeaders, redirect: 'manual' });
+        if (![301, 302, 303, 307, 308].includes(current.status)) {
+          return current;
+        }
+        stage = 'cdn_redirect';
+      }
+      await current.body?.cancel().catch(() => {});
+      throw new CliError(t('downloadFailed'), 1, 'download', { stage: 'cdn_redirect' });
+    };
     let handedOff = false;
     try {
       const address = /^https?:\/\//.test(route) ? route : this.url(route);
-      // API 不得重定向；免费发布物可以跳到公开附件，且不携带令牌。
-      const response = await fetch(address, {
-        method,
-        headers: { 'Accept-Language': this.lang, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: controller.signal,
-        redirect: download && !token ? 'follow' : 'error',
-      });
-      if (download && response.ok) { handedOff = true; return { response, dispose }; }
+      const requestHeaders = {
+        'Accept-Language': this.lang,
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
+      // API 请求不允许跳转；下载请求统一手动校验每一跳 Location 后再发起下一跳请求。
+      const response = download
+        ? await fetchHop(address, { method, headers: requestHeaders, redirect: 'manual' })
+        : await fetch(address, {
+          method,
+          headers: requestHeaders,
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+          signal: controller.signal,
+          redirect: 'error',
+        });
+      if (download && [301, 302, 303, 307, 308].includes(response.status)) {
+        const metadata = new Headers(response.headers);
+        const cdnResponse = await followDownloadRedirects(
+          response,
+          address,
+          { Accept: 'application/octet-stream', 'Accept-Language': this.lang },
+          token ? 'redirect' : 'cdn_redirect',
+        );
+        if (!cdnResponse.ok || !cdnResponse.body) {
+          await cdnResponse.body?.cancel().catch(() => {});
+          throw new CliError(t('downloadFailedCode', { code: `HTTP ${cdnResponse.status}` }), 1, 'download', { http_status: cdnResponse.status, stage: 'cdn_download' });
+        }
+        handedOff = true;
+        return { response: cdnResponse, metadata, dispose, abort, signal: controller.signal, budgetMs, isTimedOut: () => timedOut };
+      }
+      if (download && response.ok) {
+        if (!response.body) throw new CliError(t('downloadFailed'), 1, 'download', { stage: 'transfer' });
+        handedOff = true;
+        return { response, metadata: new Headers(response.headers), dispose, abort, signal: controller.signal, budgetMs, isTimedOut: () => timedOut };
+      }
       let data;
       try { data = await response.json(); }
       catch { if (![401, 402].includes(response.status)) throw invalid(t('invalidJson')); }
@@ -97,7 +198,9 @@ export class Client {
       return data;
     } catch (error) {
       if (error instanceof CliError) throw error;
-      throw new CliError(this.signal.aborted ? t('canceled') : t('network'), 1, this.signal.aborted ? 'cancelled' : 'network');
+      if (this.signal.aborted) throw new CliError(t('canceled'), 1, 'cancelled');
+      if (download && timedOut) throw new CliError(t('downloadTimeout'), 1, 'download_timeout', { reason: 'timeout', timeout_ms: activeTimeoutMs });
+      throw new CliError(t('network'), 1, 'network');
     } finally {
       if (!handedOff) dispose();
     }

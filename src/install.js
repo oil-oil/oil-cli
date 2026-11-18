@@ -16,6 +16,26 @@ import { tarInvocation, directoryKey } from './platform.js';
 const exec = promisify(execFile);
 const archiveError = () => new CliError(t('invalidArchive'), 1, 'invalid_archive');
 const string = (buffer) => buffer.toString('utf8').split('\0')[0];
+const WRITE_SYSCALLS = new Set(['open', 'write', 'close', 'mkdir', 'fsync']);
+const WRITE_CODES = new Set(['ENOSPC', 'EACCES', 'EPERM', 'EROFS', 'EMFILE', 'ENFILE', 'EIO', 'EDQUOT']);
+
+function sanitizeDownloadFailure(cause) {
+  const candidates = [
+    cause,
+    cause?.cause,
+    ...(Array.isArray(cause?.errors) ? cause.errors : []),
+    ...(Array.isArray(cause?.cause?.errors) ? cause.cause.errors : []),
+  ];
+  let code = null;
+  let syscall = null;
+  for (const item of candidates) {
+    if (!item || typeof item !== 'object') continue;
+    if (!code && typeof item.code === 'string' && /^[A-Z][A-Z0-9_]{1,40}$/.test(item.code)) code = item.code;
+    if (!syscall && typeof item.syscall === 'string' && /^[a-z0-9_]{1,20}$/.test(item.syscall)) syscall = item.syscall;
+  }
+  const stage = (syscall && WRITE_SYSCALLS.has(syscall)) || (code && WRITE_CODES.has(code)) ? 'write' : 'transfer';
+  return { ...(code ? { cause_code: code } : {}), stage };
+}
 
 function tarNumber(buffer) {
   // GNU base-256 与标准八进制。
@@ -146,21 +166,61 @@ export async function prepare(client, name, release, token, paid, product, signa
   let dispose, response;
   try {
     if (paid && !token) throw new CliError(t('loginRequired'), 3, 'unauthorized');
-    const route = `/api/store/download/${encodeURIComponent(name)}?version=${encodeURIComponent(release.latest)}&format=tar.gz`;
+    const route = `/api/store/download/${encodeURIComponent(name)}?version=${encodeURIComponent(release.latest)}&format=tar.gz${paid ? '&redirect=1' : ''}`;
     const download = await client.request(route, { token: paid ? token : undefined, download: true, skill: name, product });
     dispose = download.dispose;
     response = download.response;
+    const metadata = download.metadata || response.headers;
     // 免费下载的 302 响应头不会保留，使用 versions 给出的摘要。
-    const expected = paid ? response.headers.get('X-Content-SHA256') : release.sha256 || response.headers.get('X-Content-SHA256');
+    const expected = paid ? metadata.get('X-Content-SHA256') : release.sha256 || metadata.get('X-Content-SHA256');
     if (!/^[a-fA-F0-9]{64}$/.test(expected || '')) throw new CliError(t('missingChecksum'), 1, 'missing_checksum');
-    const headerVersion = response.headers.get('X-Skill-Version');
+    const headerVersion = metadata.get('X-Skill-Version');
     if ((paid || headerVersion) && headerVersion !== release.latest) throw new CliError(t('versionMismatch'), 1, 'version_mismatch');
     const archive = path.join(temporary, 'release.tar.gz');
     const hash = createHash('sha256');
-    const hashing = new Transform({ transform(chunk, encoding, callback) { hash.update(chunk); callback(null, chunk); } });
+    const stallMs = Math.min(60_000, download.budgetMs || 60_000);
+    let stalled = false;
+    let stallTimer;
+    const resetStall = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => { stalled = true; download.abort?.(); }, stallMs);
+    };
+    const hashing = new Transform({
+      transform(chunk, encoding, callback) {
+        resetStall();
+        hash.update(chunk);
+        callback(null, chunk);
+      },
+    });
+    const fileStream = createWriteStream(archive, { flags: 'wx', mode: 0o600 });
     try {
-      await pipeline(Readable.fromWeb(download.response.body), hashing, createWriteStream(archive, { flags: 'wx', mode: 0o600 }), { signal });
-    } catch { throw new CliError(signal.aborted ? t('canceled') : t('downloadFailed'), 1, signal.aborted ? 'cancelled' : 'download'); }
+      resetStall();
+      await pipeline(Readable.fromWeb(response.body), hashing, fileStream, { signal: download.signal || signal });
+    } catch (cause) {
+      if (!fileStream.closed) {
+        await new Promise((resolve) => {
+          fileStream.once('close', resolve);
+          fileStream.destroy();
+        });
+      }
+      if (signal.aborted) throw new CliError(t('canceled'), 1, 'cancelled');
+      if (download.isTimedOut?.() || stalled) {
+        const timedOutByBudget = Boolean(download.isTimedOut?.());
+        throw new CliError(t('downloadTimeout'), 1, 'download_timeout', {
+          reason: timedOutByBudget ? 'timeout' : 'stall_timeout',
+          timeout_ms: timedOutByBudget ? download.budgetMs : stallMs,
+        });
+      }
+      const details = sanitizeDownloadFailure(cause);
+      throw new CliError(
+        details.cause_code ? t('downloadFailedCode', { code: details.cause_code }) : t('downloadFailed'),
+        1,
+        'download',
+        details,
+      );
+    } finally {
+      clearTimeout(stallTimer);
+    }
     if (hash.digest('hex') !== expected.toLowerCase()) throw new CliError(t('checksumMismatch'), 1, 'checksum_mismatch');
     await validateArchive(archive, name);
     const extracted = path.join(temporary, 'extracted');

@@ -542,3 +542,148 @@ test('同一安装经由两个路径（符号链接）被扫到时，status 只�
   const value = data(await f.run(['status', '--json']));
   assert.equal(value.installations.length, 1);
 });
+
+test('付费下载默认走 redirect=1 且不向跳转目标携带令牌；拒绝不安全重定向并兼容旧版 200 流', async (t) => {
+  const f = await fixture(t);
+  const dlTmp = path.join(f.temporary, 'dl-redirect-tmp');
+  await mkdir(dlTmp);
+  const result = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: TOKEN, TMPDIR: dlTmp, TMP: dlTmp, TEMP: dlTmp });
+  assert.equal(result.code, 0, result.stdout);
+  const apiReq = f.state.requests.find((r) => r.path === '/api/store/download/oil-ui-pro');
+  const cdnReq = f.state.requests.find((r) => r.path === '/releases/oil-ui-pro-0.10.0.tar.gz');
+  assert.equal(apiReq.query.get('redirect'), '1');
+  assert.equal(apiReq.token, TOKEN);
+  assert.ok(cdnReq);
+  assert.equal(cdnReq.token, undefined);
+
+  // 兼容未返回 302 的旧版 200 流式服务端
+  f.state.latest = '0.11.0';
+  f.state.forceStreamDownload = true;
+  const streamUpdate = await f.run(['update', '--yes', '--json'], { OIL_TOKEN: TOKEN, TMPDIR: dlTmp, TMP: dlTmp, TEMP: dlTmp });
+  assert.equal(streamUpdate.code, 0, streamUpdate.stdout);
+  assert.match(await readFile(path.join(f.home, '.codex', 'skills', 'oil-ui-pro', 'SKILL.md'), 'utf8'), /0\.11\.0/);
+
+  // 拒绝跳转到非本机明文 HTTP 目标
+  f.state.forceStreamDownload = false;
+  f.state.paidRedirectLocation = 'http://evil.example/oil-ui-pro.tar.gz';
+  const badRedirect = await f.run(['install', 'oil-ui-pro', '--to', 'claude', '--yes', '--json'], { OIL_TOKEN: TOKEN, TMPDIR: dlTmp, TMP: dlTmp, TEMP: dlTmp });
+  assert.equal(badRedirect.code, 1);
+  assert.equal(data(badRedirect).error, 'download');
+  assert.deepEqual(await readdir(dlTmp), []);
+});
+
+test('OIL_DOWNLOAD_TIMEOUT 支持配置并清理半截临时包；区分超时与断流错误并脱敏', async (t) => {
+  const { downloadTimeoutMs, DEFAULT_DOWNLOAD_TIMEOUT_MS } = await import('../src/client.js');
+  assert.equal(downloadTimeoutMs({}), DEFAULT_DOWNLOAD_TIMEOUT_MS);
+  assert.equal(downloadTimeoutMs({ OIL_DOWNLOAD_TIMEOUT: '600' }), 600_000);
+  assert.equal(downloadTimeoutMs({ OIL_DOWNLOAD_TIMEOUT: '120s' }), 120_000);
+  assert.equal(downloadTimeoutMs({ OIL_DOWNLOAD_TIMEOUT: '45ms' }), 45);
+  assert.throws(() => downloadTimeoutMs({ OIL_DOWNLOAD_TIMEOUT: '0' }), { code: 2, error: 'usage' });
+
+  const f = await fixture(t);
+  const dlTmp = path.join(f.temporary, 'dl-timeout-tmp');
+  await mkdir(dlTmp);
+
+  const invalidTimeout = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: TOKEN, OIL_DOWNLOAD_TIMEOUT: 'abc' });
+  assert.equal(invalidTimeout.code, 2);
+
+  // 慢速流触发下载超时：返回 download_timeout 且不残留临时下载目录
+  f.state.downloadHandler = async (_req, res, _url, releases) => {
+    const body = releases['oil-ui-pro:0.10.0'].body;
+    res.writeHead(200, { 'Content-Type': 'application/gzip' });
+    res.write(body.subarray(0, 64));
+    setTimeout(() => { if (!res.destroyed) res.end(body.subarray(64)); }, 300);
+  };
+  const timedOut = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--yes', '--json'], {
+    OIL_TOKEN: TOKEN, OIL_DOWNLOAD_TIMEOUT: '40ms', TMPDIR: dlTmp, TMP: dlTmp, TEMP: dlTmp,
+  });
+  assert.equal(timedOut.code, 1);
+  const timeoutJson = data(timedOut);
+  assert.equal(timeoutJson.error, 'download_timeout');
+  assert.equal(timeoutJson.reason, 'timeout');
+  assert.match(timeoutJson.message, /OIL_DOWNLOAD_TIMEOUT=600/);
+  assert.deepEqual(await readdir(dlTmp), []);
+
+  // 中途断流：返回 download 与脱敏诊断字段，不泄漏令牌或临时路径
+  f.state.downloadHandler = async (_req, res, _url, releases) => {
+    const body = releases['oil-ui-pro:0.10.0'].body;
+    res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Length': String(body.length) });
+    res.write(body.subarray(0, 64));
+    setTimeout(() => res.destroy(new Error('socket reset')), 15);
+  };
+  const dropped = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--yes', '--json'], {
+    OIL_TOKEN: TOKEN, TMPDIR: dlTmp, TMP: dlTmp, TEMP: dlTmp,
+  });
+  assert.equal(dropped.code, 1);
+  const droppedJson = data(dropped);
+  assert.equal(droppedJson.error, 'download');
+  assert.equal(droppedJson.stage, 'transfer');
+  assert.ok(typeof droppedJson.cause_code === 'string' && /^[A-Z0-9_]+$/.test(droppedJson.cause_code));
+  assert(!dropped.stdout.includes(TOKEN));
+  assert(!dropped.stdout.includes(dlTmp));
+  assert.deepEqual(await readdir(dlTmp), []);
+});
+
+test('download 跳转前校验降级与跳转上限，且显式 OIL_DOWNLOAD_TIMEOUT 控制单跳等待预算', async (t) => {
+  const { Client, validateDownloadTarget } = await import('../src/client.js');
+
+  // HTTPS 不得降级跳转到 HTTP（即便是本地回环地址）；HTTP 回环允许同级跳转
+  assert.equal(validateDownloadTarget('http://127.0.0.1:8080/a.tgz', 'https://ui.oiloil.org/api/store/download/oil-ui-pro'), null);
+  assert.equal(validateDownloadTarget('http://localhost:8080/a.tgz', 'https://ui.oiloil.org/api/store/download/oil-ui-pro'), null);
+  assert.ok(validateDownloadTarget('http://127.0.0.1:8080/a.tgz', 'http://127.0.0.1:3000/api/store/download/oil-ui-pro'));
+  assert.ok(validateDownloadTarget('https://objects.githubusercontent.com/a.tgz', 'https://ui.oiloil.org/api/store/download/oil-ui-pro'));
+
+  // 显式设置 OIL_DOWNLOAD_TIMEOUT 时，单跳响应头等待不被调用方默认 timeoutMs=10ms 截断
+  const http = await import('node:http');
+  const slowServer = http.createServer((_req, res) => {
+    setTimeout(() => {
+      if (!res.destroyed) {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end('ok');
+      }
+    }, 35);
+  });
+  await new Promise((resolve) => slowServer.listen(0, '127.0.0.1', resolve));
+  t.after(() => slowServer.close());
+  const { port: slowPort } = slowServer.address();
+
+  const previousTimeout = process.env.OIL_DOWNLOAD_TIMEOUT;
+  process.env.OIL_DOWNLOAD_TIMEOUT = '200ms';
+  try {
+    const client = new Client();
+    client.base = `http://127.0.0.1:${slowPort}`;
+    const dl = await client.request('/pkg.tgz', { download: true, token: TOKEN, timeoutMs: 10 });
+    assert.equal(await dl.response.text(), 'ok');
+    dl.dispose();
+  } finally {
+    if (previousTimeout === undefined) delete process.env.OIL_DOWNLOAD_TIMEOUT;
+    else process.env.OIL_DOWNLOAD_TIMEOUT = previousTimeout;
+  }
+
+  // 禁止跳转到不安全目标（请求发出前拦截）并限制最多 5 跳
+  const originalFetch = globalThis.fetch;
+  const seenUrls = [];
+  globalThis.fetch = async (url) => {
+    seenUrls.push(String(url));
+    if (String(url).startsWith('https://ui.oiloil.org/')) {
+      return new Response(null, { status: 302, headers: { Location: 'http://127.0.0.1:9999/downgraded' } });
+    }
+    return new Response(null, { status: 302, headers: { Location: `https://cdn.example.com/hop/${seenUrls.length}` } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const client = new Client();
+  client.base = 'https://ui.oiloil.org';
+  await assert.rejects(
+    () => client.request('/api/store/download/oil-ui-pro', { download: true, token: TOKEN }),
+    (err) => err?.error === 'download' && err?.details?.stage === 'redirect',
+  );
+  assert.deepEqual(seenUrls, ['https://ui.oiloil.org/api/store/download/oil-ui-pro']);
+
+  seenUrls.length = 0;
+  await assert.rejects(
+    () => client.request('https://cdn.example.com/start', { download: true }),
+    (err) => err?.error === 'download' && err?.details?.stage === 'cdn_redirect',
+  );
+  assert.equal(seenUrls.length, 6);
+});
