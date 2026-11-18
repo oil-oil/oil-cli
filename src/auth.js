@@ -15,7 +15,7 @@ const publicDevice = ({ user_code, verification_uri, verification_uri_complete, 
 
 async function deviceLogin(ctx) {
   const waitDeadline = ctx.now() + (ctx.terminal ? 600_000 : 60_000);
-  let device = await readPendingDevice();
+  let device = await readPendingDevice(ctx.client.base);
   if (device) ctx.output.remember(device.device_code, { hide: true });
   if (device && device.expires_at <= ctx.now()) {
     await clearPendingDevice();
@@ -30,7 +30,7 @@ async function deviceLogin(ctx) {
       // 无论响应是否完整，都先登记设备密钥，防止错误输出泄漏它。
       if (typeof result?.device_code === 'string') ctx.output.remember(result.device_code, { hide: true });
       device = { device_code: result?.device_code, user_code: result?.user_code, verification_uri: result?.verification_uri,
-        verification_uri_complete: result?.verification_uri_complete, expires_at: started + result?.expires_in * 1000, interval: result?.interval };
+        verification_uri_complete: result?.verification_uri_complete, expires_at: started + result?.expires_in * 1000, interval: result?.interval, api: ctx.client.base };
       if (!Number.isFinite(result?.expires_in) || result.expires_in <= 0 || !isPendingDevice(device)) throw new CliError(t('invalidDevice'), 1, 'invalid_response');
       // 在浏览器授权和轮询之前落盘，Agent 提前结束进程也能继续领取。
       await savePendingDevice(device);
@@ -114,6 +114,6 @@ export async function loadAuth(ctx) {
 export async function requireLogin(ctx) {
   await loadAuth(ctx);
   // 环境变量和 CI 沿用原有令牌规则；本机待领取登录优先完成。
-  if (ctx.token && (process.env.OIL_TOKEN || isCI() || !await readPendingDevice())) return;
+  if (ctx.token && (process.env.OIL_TOKEN || isCI() || !await readPendingDevice(ctx.client.base))) return;
   await login(ctx);
 }
