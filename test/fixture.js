@@ -93,6 +93,7 @@ export async function fixture(t) {
     for (const version of ['0.10.0', '0.11.0']) releases[`${name}:${version}`] = await release(temporary, name, version);
   }
   const state = { catalog: structuredClone(CATALOG), latest: '0.10.0', versionOverrides: {}, omitVersions: [], badChecksum: false, missingChecksum: false, proBadChecksum: false, paidMissingChecksum: false,
+    forceStreamDownload: false, paidRedirectLocation: null, downloadHandler: null,
     deviceStatuses: ['authorization_pending', 'success'], devicePolls: 0, deviceRequests: 0, interval: 5, expiresIn: 600, deviceApproved: false, requireApproval: false,
     checkoutPolls: 0, checkoutRequests: 0, checkoutActiveAfter: 2, checkoutAlreadyActive: false, downloadInactiveCount: 0,
     checkoutStatusPolls: 0, checkoutStatusActiveAfter: Infinity, checkoutCreated: 0, sessions: new Map(),
@@ -136,6 +137,7 @@ export async function fixture(t) {
         return json(res, 200, { skills });
       }
       if (req.method === 'GET' && url.pathname.startsWith('/releases/')) {
+        if (state.downloadHandler) return await state.downloadHandler(req, res, url, releases);
         const [, name, version] = url.pathname.match(/^\/releases\/(.+)-(\d+\.\d+\.\d+)\.tar\.gz$/) || [];
         const archive = releases[`${name}:${version}`];
         if (!archive) return error(res, 404, 'not_found', '没有该版本。');
@@ -155,8 +157,14 @@ export async function fixture(t) {
           state.grants.set(token, []);
         }
         if (!subscriptions(token).some((s) => s.skill === name)) return error(res, 402, 'inactive', '尚未购买。');
-        res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Disposition': `attachment; filename="${name}-${version}.tar.gz"`,
-          ...(state.paidMissingChecksum ? {} : { 'X-Content-SHA256': state.proBadChecksum ? 'f'.repeat(64) : archive.sha256 }), 'X-Skill-Version': state.badVersion ? '9.9.9' : version });
+        const headers = { 'Content-Type': 'application/gzip', 'Content-Disposition': `attachment; filename="${name}-${version}.tar.gz"`,
+          ...(state.paidMissingChecksum ? {} : { 'X-Content-SHA256': state.proBadChecksum ? 'f'.repeat(64) : archive.sha256 }), 'X-Skill-Version': state.badVersion ? '9.9.9' : version };
+        if (url.searchParams.get('redirect') === '1' && !state.forceStreamDownload) {
+          res.writeHead(302, { ...headers, Location: state.paidRedirectLocation ?? `${base}/releases/${name}-${version}.tar.gz` });
+          return res.end();
+        }
+        if (state.downloadHandler) return await state.downloadHandler(req, res, url, releases, headers);
+        res.writeHead(200, headers);
         return res.end(archive.body);
       }
       if (req.method === 'POST' && url.pathname === '/api/cli/device') {
@@ -275,7 +283,7 @@ export async function fixture(t) {
   });
   const close = async () => {
     await new Promise((resolve, reject) => { server.close((err) => err ? reject(err) : resolve()); server.closeAllConnections(); });
-    await rm(temporary, { recursive: true, force: true });
+    await rm(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
   t?.after(close);
   return { temporary, home, cwd, config, configFile, mockBin, env, base, state, releases, run, close };

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fixture, TOKEN, EMAIL } from './fixture.js';
 
@@ -36,4 +36,44 @@ test('旧配置没有记录服务器时视为默认服务器，不发给其他�
   const result = await f.run(['status', '--json']);
   assert.equal(result.code, 0, result.stdout);
   assert(f.state.requests.every((request) => request.token === undefined));
+});
+
+test('恢复设备登录只向签发服务器领取，切换 API 会申请新代码', async (t) => {
+  for (const legacy of [false, true]) {
+    const f = await fixture(t), other = await fixture(t);
+    f.state.requireApproval = true;
+    assert.equal((await f.run(['login', '--json'])).code, 3);
+    const saved = JSON.parse(await readFile(f.configFile, 'utf8'));
+    saved.pending_device.device_code = 'original-origin-only-device-secret';
+    if (legacy) delete saved.pending_device.api;
+    await writeFile(f.configFile, JSON.stringify(saved));
+    const result = await f.run(['login', '--json'], { OIL_API: other.base }, { startTime: 60000 });
+    assert.equal(result.code, 0, result.stdout);
+    assert.equal(other.state.deviceRequests, 1);
+    assert(other.state.requests.filter(request => request.path === '/api/cli/token')
+      .every(request => request.body.device_code !== saved.pending_device.device_code));
+    assert(!result.stdout.includes(saved.pending_device.device_code));
+  }
+});
+
+test('旧设备记录可在原服务器恢复；不同来源的授权地址不用于恢复登录', async (t) => {
+  const f = await fixture(t);
+  f.state.requireApproval = true;
+  assert.equal((await f.run(['login', '--json'])).code, 3);
+  const saved = JSON.parse(await readFile(f.configFile, 'utf8'));
+  delete saved.pending_device.api;
+  await writeFile(f.configFile, JSON.stringify(saved));
+  f.state.deviceApproved = true;
+  assert.equal((await f.run(['login', '--json'], {}, { startTime: 60000 })).code, 0);
+  assert.equal(f.state.deviceRequests, 1);
+
+  // 旧格式仍需同时校验两个授权地址，防止打开另一个 origin。
+  delete saved.token;
+  saved.pending_device.verification_uri_complete = 'https://external.example/device/';
+  await writeFile(f.configFile, JSON.stringify(saved));
+  f.state.requireApproval = false;
+  const result = await f.run(['login', '--json'], {}, { startTime: 60000 });
+  assert.equal(result.code, 0, result.stdout);
+  assert.equal(f.state.deviceRequests, 2);
+  assert(!result.trace.browserUrls.includes(saved.pending_device.verification_uri_complete));
 });

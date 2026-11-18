@@ -16,6 +16,8 @@ export function configPath(env = process.env, platform = process.platform) {
 
 export function isPendingDevice(device) {
   return device && ['device_code', 'user_code', 'verification_uri', 'verification_uri_complete'].every((key) => typeof device[key] === 'string' && device[key])
+    && (device.api === undefined || (typeof device.api === 'string' && origin(device.api)
+      && origin(device.verification_uri) === origin(device.api) && origin(device.verification_uri_complete) === origin(device.api)))
     && Number.isFinite(device.expires_at) && device.expires_at > 0 && Number.isFinite(device.interval) && device.interval > 0;
 }
 
@@ -59,8 +61,12 @@ export async function readAuth(api) {
   return { token: data.token, email: data.email };
 }
 
-export async function readPendingDevice() {
-  return (await readConfig())?.pending_device ?? null;
+export async function readPendingDevice(api) {
+  const device = (await readConfig())?.pending_device;
+  const current = origin(api);
+  // 旧记录没有 api，可从授权地址判断来源；无法确认时不领取旧设备密钥。
+  return device && current && origin(device.api || device.verification_uri) === current
+    && origin(device.verification_uri) === current && origin(device.verification_uri_complete) === current ? device : null;
 }
 
 // 会话只能由创建它的令牌向同一服务器查询；不把环境令牌写进配置。
