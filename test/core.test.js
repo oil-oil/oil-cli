@@ -204,16 +204,44 @@ test('预检拒绝绝对路径、../、硬链接和拼接的第二份 tar', asyn
   await assert.rejects(validateArchive(file, 'oil-ui'), { error: 'invalid_archive' });
 });
 
+function paxRecord(key, value) {
+  const body = `${key}=${value}\n`;
+  const bodyBytes = Buffer.byteLength(body);
+  let total = String(bodyBytes + 3).length + 1 + bodyBytes;
+  while (String(total).length + 1 + bodyBytes !== total) {
+    total = String(total).length + 1 + bodyBytes;
+  }
+  return `${total} ${body}`;
+}
+
 test('系统 tar 生成的长路径（PAX/ustar）发布物可以通过预检', async (t) => {
   const directory = await temp(t);
   const source = path.join(directory, 'source');
   const skill = await writeSkill(source, 'oil-ui', '0.10.0');
-  const deep = path.join(skill, 'assets', 'a'.repeat(150), 'b'.repeat(110));
+  // Windows System32\tar.exe 在源磁盘路径超过 MAX_PATH (260) 时会发生访问冲突；
+  // 控制磁盘路径在 MAX_PATH 内以触发系统 tar 的 ustar/PAX 打包，并额外构造 >300 字节的 PAX 与 GNU LongLink 归档做跨平台预检。
+  const [firstLen, secondLen] = process.platform === 'win32' ? [70, 55] : [150, 110];
+  const deep = path.join(skill, 'assets', 'a'.repeat(firstLen), 'b'.repeat(secondLen));
   await mkdir(deep, { recursive: true });
   await writeFile(path.join(deep, '中文.txt'), '长路径');
   const file = path.join(directory, 'long.tar.gz');
   await pack(file, source, ['oil-ui']);
   await validateArchive(file, 'oil-ui');
+
+  const paxLongPath = `oil-ui/assets/${'a'.repeat(160)}/${'b'.repeat(120)}/中文.txt`;
+  const gnuLongPath = `oil-ui/assets/${'c'.repeat(160)}/${'d'.repeat(120)}/long.txt`;
+  const synthetic = path.join(directory, 'synthetic-long.tar.gz');
+  await writeFile(synthetic, gzipSync(Buffer.concat([
+    tarEntry('oil-ui/', '5'),
+    tarEntry('oil-ui/SKILL.md', '0', 'name: oil-ui'),
+    tarEntry('PaxHeader/long', 'x', paxRecord('path', paxLongPath)),
+    tarEntry('oil-ui/pax-placeholder', '0', '长路径'),
+    tarEntry('././@LongLink', 'L', `${gnuLongPath}\0`),
+    tarEntry('oil-ui/gnu-placeholder', '0', 'long'),
+    Buffer.alloc(1024),
+  ])));
+  await validateArchive(synthetic, 'oil-ui', 'linux');
+  await validateArchive(synthetic, 'oil-ui', 'win32');
 });
 
 test('配置位置遵守 XDG、HOME 和 Windows APPDATA；浏览器调用平台原生命令', async () => {
