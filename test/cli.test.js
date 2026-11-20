@@ -687,3 +687,236 @@ test('download 跳转前校验降级与跳转上限，且显式 OIL_DOWNLOAD_TIM
   );
   assert.equal(seenUrls.length, 6);
 });
+
+test('付费套件 included 配套 Skill 随主包原子安装、跨宿主软链、支持单独安装与 update 自动补齐', async (t) => {
+  const f = await fixture(t);
+  f.state.catalog[0].included = ['oil-art-landing'];
+  const codex = path.join(f.home, '.codex', 'skills');
+  const agents = path.join(f.home, '.agents', 'skills');
+
+  // 1) 未发布配套资产时，install oil-ui-pro 优雅跳过配套 Skill 不报错
+  f.state.omitVersions = ['oil-art-landing'];
+  const pre = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--to', 'agents', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(pre.code, 0, pre.stderr);
+  assert.deepEqual(data(pre).installations.map((i) => i.name), ['oil-ui-pro']);
+  await absent(path.join(codex, 'oil-art-landing'));
+
+  // 2) 配套资产发布后，update 自动为已装 oil-ui-pro 的用户补装 oil-art-landing 并同目录建软链，且 JSON 保留 links
+  f.state.omitVersions = [];
+  const up = await f.run(['update', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(up.code, 0, up.stderr);
+  const upData = data(up);
+  assert.deepEqual(upData.installations.map((i) => i.name), ['oil-art-landing']);
+  assert.deepEqual(upData.links.map((l) => l.name), ['oil-art-landing']);
+  assert.match(await readFile(path.join(codex, 'oil-art-landing', 'SKILL.md'), 'utf8'), /name: oil-art-landing/);
+  assert.match(await readFile(path.join(agents, 'oil-art-landing', 'SKILL.md'), 'utf8'), /name: oil-art-landing/);
+
+  // 3) 全新目录 install oil-ui-pro 一次安装主包 + 配套包
+  const f2 = await fixture(t);
+  f2.state.catalog[0].included = ['oil-art-landing'];
+  const fresh = await f2.run(['install', 'oil-ui-pro', '--to', 'codex', '--to', 'agents', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(fresh.code, 0, fresh.stderr);
+  const freshData = data(fresh);
+  assert.deepEqual(freshData.installations.map((i) => i.name), ['oil-ui-pro', 'oil-art-landing']);
+  assert.deepEqual(freshData.links.map((l) => l.name), ['oil-ui-pro', 'oil-art-landing']);
+
+  // 4) 单独安装 oil-art-landing 复用 oil-ui-pro 权益
+  const f3 = await fixture(t);
+  f3.state.catalog[0].included = ['oil-art-landing'];
+  const solo = await f3.run(['install', 'oil-art-landing', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(solo.code, 0, solo.stderr);
+  assert.deepEqual(data(solo).installations.map((i) => i.name), ['oil-art-landing']);
+
+  // 5) --path 单目录更新主包时，也在同级目录补装配套 Skill；且未识别同名目录占坑时不阻断主包安装
+  const f4 = await fixture(t);
+  f4.state.catalog[0].included = ['oil-art-landing'];
+  const customRoot = path.join(f4.cwd, 'custom-skills');
+  f4.state.omitVersions = ['oil-art-landing'];
+  const initCustom = await f4.run(['install', 'oil-ui-pro', '--to', customRoot, '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(initCustom.code, 0, initCustom.stderr);
+  f4.state.omitVersions = [];
+  const pathUp = await f4.run(['update', 'oil-ui-pro', '--path', path.join(customRoot, 'oil-ui-pro'), '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(pathUp.code, 0, pathUp.stderr);
+  assert.deepEqual(data(pathUp).installations.map((i) => i.name), ['oil-art-landing']);
+  assert.match(await readFile(path.join(customRoot, 'oil-art-landing', 'SKILL.md'), 'utf8'), /name: oil-art-landing/);
+
+  // 6) 同名未识别目录占坑时，跳过配套 Skill 而不拖垮主包安装
+  const f5 = await fixture(t);
+  f5.state.catalog[0].included = ['oil-art-landing'];
+  const occRoot = path.join(f5.home, '.codex', 'skills');
+  await mkdir(path.join(occRoot, 'oil-art-landing'), { recursive: true });
+  await writeFile(path.join(occRoot, 'oil-art-landing', 'keep.txt'), 'mine');
+  const occRes = await f5.run(['install', 'oil-ui-pro', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(occRes.code, 0, occRes.stderr);
+  assert.deepEqual(data(occRes).installations.map((i) => i.name), ['oil-ui-pro']);
+  assert.equal(data(occRes).skipped.some((s) => s.name === 'oil-art-landing' && s.reason === 'unrecognized_skill'), true);
+  assert.equal(await readFile(path.join(occRoot, 'oil-art-landing', 'keep.txt'), 'utf8'), 'mine');
+});
+
+test('配套 Skill 单独安装不删除开源版；多份主 Skill 副本只规划一次配套 Skill', async (t) => {
+  // 单独安装配套 Skill：它不能替代开源版，同目录的 oil-ui 必须保留
+  const f = await fixture(t);
+  f.state.catalog[0].included = ['oil-art-landing'];
+  const codex = path.join(f.home, '.codex', 'skills');
+  await writeSkill(codex, 'oil-ui', '0.10.0');
+  const solo = await f.run(['install', 'oil-art-landing', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(solo.code, 0, solo.stderr);
+  assert.deepEqual(data(solo).installations.map((i) => i.name), ['oil-art-landing']);
+  assert.deepEqual(data(solo).removed, []);
+  assert.match(await readFile(path.join(codex, 'oil-ui', 'SKILL.md'), 'utf8'), /name: oil-ui\n/);
+
+  // 两个用户级目录各有一份独立的 oil-ui-pro：update 只补装一份配套 Skill，另一处建链接，不再整体失败
+  const f2 = await fixture(t);
+  f2.state.catalog[0].included = ['oil-art-landing'];
+  const codex2 = path.join(f2.home, '.codex', 'skills');
+  const claude2 = path.join(f2.home, '.claude', 'skills');
+  await writeSkill(codex2, 'oil-ui-pro', '0.10.0');
+  await writeSkill(claude2, 'oil-ui-pro', '0.10.0');
+  const up = await f2.run(['update', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(up.code, 0, up.stderr);
+  assert.deepEqual(data(up).installations.map((i) => i.name), ['oil-art-landing']);
+  assert.deepEqual(data(up).links.map((l) => l.name), ['oil-art-landing']);
+  assert.deepEqual(data(up).warnings.filter((w) => w.includes('oil-art-landing')), []);
+  assert.match(await readFile(path.join(codex2, 'oil-art-landing', 'SKILL.md'), 'utf8'), /name: oil-art-landing/);
+  assert.match(await readFile(path.join(claude2, 'oil-art-landing', 'SKILL.md'), 'utf8'), /name: oil-art-landing/);
+});
+
+test('配套 Skill 下载失败、授权失效或未登录时只跳过它，不拖累主 Skill 和其他更新', async (t) => {
+  const failCompanion = (state) => {
+    state.downloadHandler = async (_req, res, url, releases, headers) => {
+      if (url.pathname.includes('oil-art-landing')) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'not_found', message: '没有该版本。' }));
+      }
+      if (headers) {
+        res.writeHead(200, headers);
+        return res.end(releases[`${decodeURIComponent(url.pathname.split('/').at(-1))}:${headers['X-Skill-Version']}`].body);
+      }
+      const [, name, version] = url.pathname.match(/^\/releases\/(.+)-(\d+\.\d+\.\d+)\.tar\.gz$/);
+      res.writeHead(200, { 'Content-Type': 'application/gzip' });
+      return res.end(releases[`${name}:${version}`].body);
+    };
+  };
+
+  // 安装主 Skill 时配套包下载失败：主 Skill 照常装好，配套 Skill 写进 warnings
+  const f = await fixture(t);
+  f.state.catalog[0].included = ['oil-art-landing'];
+  failCompanion(f.state);
+  const codex = path.join(f.home, '.codex', 'skills');
+  const install = await f.run(['install', 'oil-ui-pro', '--to', 'codex', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(install.code, 0, install.stderr);
+  assert.deepEqual(data(install).installations.map((i) => i.name), ['oil-ui-pro']);
+  assert.equal(data(install).warnings.some((w) => w.includes('oil-art-landing')), true);
+  assert.match(await readFile(path.join(codex, 'oil-ui-pro', 'SKILL.md'), 'utf8'), /name: oil-ui-pro/);
+  await absent(path.join(codex, 'oil-art-landing'));
+
+  // update 时主 Skill 有新版本、配套包下载失败：主 Skill 仍然升级
+  f.state.latest = '0.11.0';
+  const up = await f.run(['update', '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(up.code, 0, up.stderr);
+  assert.deepEqual(data(up).installations.map((i) => [i.name, i.version]), [['oil-ui-pro', '0.11.0']]);
+  assert.equal(data(up).warnings.some((w) => w.includes('oil-art-landing')), true);
+  await absent(path.join(codex, 'oil-art-landing'));
+
+  // Pro 授权失效：其他 Skill 照常更新，配套 Skill 提示需要有效授权后跳过
+  const f2 = await fixture(t);
+  f2.state.catalog[0].included = ['oil-art-landing'];
+  f2.state.latest = '0.11.0';
+  const codex2 = path.join(f2.home, '.codex', 'skills');
+  await writeSkill(codex2, 'oil-ui-pro', '0.11.0');
+  await writeSkill(codex2, 'oil-doc', '0.10.0');
+  const inactive = await f2.run(['update', '--yes', '--json'], { OIL_TOKEN: INACTIVE });
+  assert.equal(inactive.code, 0, inactive.stderr);
+  assert.deepEqual(data(inactive).installations.map((i) => [i.name, i.version]), [['oil-doc', '0.11.0']]);
+  assert.equal(data(inactive).warnings.some((w) => w.includes('oil-art-landing') && w.includes('Oil UI Pro')), true);
+  await absent(path.join(codex2, 'oil-art-landing'));
+
+  // 未登录且只差配套 Skill：不进入设备码登录，提示登录后跳过
+  const f3 = await fixture(t);
+  f3.state.catalog[0].included = ['oil-art-landing'];
+  const codex3 = path.join(f3.home, '.codex', 'skills');
+  await writeSkill(codex3, 'oil-ui-pro', '0.10.0');
+  const anonymous = await f3.run(['update', '--yes', '--json']);
+  assert.equal(anonymous.code, 0, anonymous.stderr);
+  assert.equal(data(anonymous).status, 'up_to_date');
+  assert.equal(f3.state.deviceRequests, 0);
+  assert.equal(data(anonymous).warnings.some((w) => w.includes('oil-art-landing')), true);
+  await absent(path.join(codex3, 'oil-art-landing'));
+});
+
+test('已装附属 Skill 更新收到 402 时，提示文案、subscribe_command 与购买链接指向主付费 Skill', async (t) => {
+  const f = await fixture(t);
+  f.state.catalog[0].included = ['oil-art-landing'];
+  f.state.latest = '0.11.0';
+  const codex = path.join(f.home, '.codex', 'skills');
+  const installed = await writeSkill(codex, 'oil-art-landing', '0.10.0');
+  const before = await snapshot(installed);
+
+  const res = await f.run(['update', '--yes', '--json'], { OIL_TOKEN: INACTIVE });
+  assert.equal(res.code, 3);
+  const err = data(res);
+  assert.equal(err.error, 'inactive');
+  assert.equal(err.http_status, 402);
+  assert.equal(err.subscribe_command, 'npx github:oil-oil/oil-cli subscribe oil-ui-pro');
+  assert.equal(err.subscription_url, `${f.base}/pro/`);
+  assert.match(err.message, /Oil UI Pro/);
+  assert.match(err.message, /subscribe oil-ui-pro/);
+  assert.doesNotMatch(err.message, /subscribe oil-art-landing/);
+  assert.deepEqual(await snapshot(installed), before);
+
+  delete f.state.catalog[0].page;
+  const fallback = await f.run(['update', 'oil-art-landing', '--yes', '--json'], { OIL_TOKEN: INACTIVE });
+  assert.equal(fallback.code, 3);
+  assert.equal(data(fallback).subscribe_command, 'npx github:oil-oil/oil-cli subscribe oil-ui-pro');
+  assert.equal(data(fallback).subscription_url, `${f.base}/store/oil-ui-pro/`);
+});
+
+test('交互式安装主付费 Skill 时，确认前提示将顺带安装的附属 Skill；被占用跳过时不误报', async (t) => {
+  const f = await fixture(t);
+  f.state.catalog[0].included = ['oil-art-landing'];
+  const claude = path.join(f.home, '.claude', 'skills');
+  const agents = path.join(f.home, '.agents', 'skills');
+  await mkdir(path.join(f.home, '.claude'), { recursive: true });
+  await mkdir(path.join(f.home, '.agents'), { recursive: true });
+
+  const confirmed = await f.run(['install', 'oil-ui-pro'], { OIL_TOKEN: TOKEN }, { interactive: true, answers: [''] });
+  assert.equal(confirmed.code, 0, confirmed.stderr);
+  assert.equal(confirmed.trace.questions.length, 1);
+  assert.match(confirmed.trace.questions[0], /oil-art-landing/);
+  assert.match(confirmed.stdout, /oil-art-landing/);
+  assert.match(await readFile(path.join(claude, 'oil-ui-pro', 'SKILL.md'), 'utf8'), /name: oil-ui-pro/);
+  assert.match(await readFile(path.join(claude, 'oil-art-landing', 'SKILL.md'), 'utf8'), /name: oil-art-landing/);
+  assert.match(await readFile(path.join(agents, 'oil-art-landing', 'SKILL.md'), 'utf8'), /name: oil-art-landing/);
+
+  // 附属目录被未识别文件占用而跳过时，确认提示不应声称会安装该附属 Skill
+  const f2 = await fixture(t);
+  f2.state.catalog[0].included = ['oil-art-landing'];
+  const occRoot = path.join(f2.home, '.codex', 'skills');
+  await mkdir(path.join(occRoot, 'oil-art-landing'), { recursive: true });
+  await writeFile(path.join(occRoot, 'oil-art-landing', 'keep.txt'), 'mine');
+  const occupied = await f2.run(['install', 'oil-ui-pro', '--to', 'codex'], { OIL_TOKEN: TOKEN }, { interactive: true, answers: [''] });
+  assert.equal(occupied.code, 0, occupied.stderr);
+  assert.equal(occupied.trace.questions.length, 1);
+  assert.doesNotMatch(occupied.trace.questions[0], /oil-art-landing/);
+  assert.equal(await readFile(path.join(occRoot, 'oil-art-landing', 'keep.txt'), 'utf8'), 'mine');
+});
+
+test('update --path 补装配套 Skill 时，也在链接到同一份主 Skill 的其他用户级目录里建链接', async (t) => {
+  const f = await fixture(t);
+  f.state.catalog[0].included = ['oil-art-landing'];
+  const agents = path.join(f.home, '.agents', 'skills');
+  const claude = path.join(f.home, '.claude', 'skills');
+  const real = await writeSkill(agents, 'oil-ui-pro', '0.10.0');
+  await mkdir(claude, { recursive: true });
+  await linkDirectory(real, path.join(claude, 'oil-ui-pro'));
+  // 另一个用户级目录里有一份独立的 oil-ui-pro：不属于这次 --path 的作用域，不能给它接上配套 Skill
+  const codex = path.join(f.home, '.codex', 'skills');
+  await writeSkill(codex, 'oil-ui-pro', '0.10.0');
+
+  const up = await f.run(['update', 'oil-ui-pro', '--path', real, '--yes', '--json'], { OIL_TOKEN: TOKEN });
+  assert.equal(up.code, 0, up.stderr);
+  assert.deepEqual(data(up).installations.map((i) => [i.name, i.path]), [['oil-art-landing', path.join(agents, 'oil-art-landing')]]);
+  assert.deepEqual(data(up).links.map((l) => [l.name, l.path]), [['oil-art-landing', path.join(claude, 'oil-art-landing')]]);
+  assert.match(await readFile(path.join(claude, 'oil-art-landing', 'SKILL.md'), 'utf8'), /name: oil-art-landing/);
+  await absent(path.join(codex, 'oil-art-landing'));
+});

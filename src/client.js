@@ -21,17 +21,26 @@ export function normalizeCatalog(data) {
       names.add(name);
       item[type] = { skill: name };
     }
+    const rawIncluded = product.included ?? [];
+    if (!Array.isArray(rawIncluded)) throw invalid(t('catalogInvalidSkill'));
+    item.included = rawIncluded.map((entry) => {
+      const name = typeof entry === 'string' ? entry : entry?.skill;
+      if (!isSkillName(name) || names.has(name) || !item.paid) throw invalid(t('catalogInvalidSkill'));
+      names.add(name);
+      return { skill: name };
+    });
     if (!item.free && !item.paid) throw invalid(t('catalogMissingSkill'));
     if (!item.prices || typeof item.prices !== 'object' || Array.isArray(item.prices)) throw invalid(t('catalogInvalidPrice'));
     return item;
   });
 }
 
-export const catalogNames = (catalog) => catalog.flatMap((p) => [p.free?.skill, p.paid?.skill].filter(Boolean));
+export const catalogNames = (catalog) => catalog.flatMap((p) => [p.free?.skill, p.paid?.skill, ...(p.included || []).map((i) => i.skill)].filter(Boolean));
 export const findSkill = (catalog, name) => {
-  const product = catalog.find((p) => p.free?.skill === name || p.paid?.skill === name);
+  const product = catalog.find((p) => p.free?.skill === name || p.paid?.skill === name || (p.included || []).some((i) => i.skill === name));
   if (!product) throw new CliError(t('unknownSkill', { name: skillLabel(name) }), 2, 'unknown_skill');
-  return { product, paid: product.paid?.skill === name };
+  const included = (product.included || []).some((i) => i.skill === name);
+  return { product, paid: product.paid?.skill === name || included, included, entitlementSkill: included ? product.paid.skill : name };
 };
 
 export const DEFAULT_API = 'https://ui.oiloil.org';
@@ -188,9 +197,10 @@ export class Client {
         let message = typeof data?.message === 'string' ? data.message : t('httpError', { status: response.status });
         if (response.status === 401) message = t('unauthorized');
         if (response.status === 402) {
-          details.subscribe_command = command('subscribe', skill || '<skill>');
-          details.subscription_url = this.subscriptionUrl(skill || '<skill>', product);
-          message = t('inactive', { name: skillLabel(skill || t('thisSkill')), next: details.subscribe_command, url: details.subscription_url });
+          const entitlementSkill = (typeof product?.paid === 'string' ? product.paid : product?.paid?.skill) || skill;
+          details.subscribe_command = command('subscribe', entitlementSkill || '<skill>');
+          details.subscription_url = this.subscriptionUrl(entitlementSkill || '<skill>', product);
+          message = t('inactive', { name: skillLabel(entitlementSkill || t('thisSkill')), next: details.subscribe_command, url: details.subscription_url });
         }
         throw new CliError(message, [401, 402].includes(response.status) ? 3 : 1,
           response.status === 401 ? 'unauthorized' : response.status === 402 ? 'inactive' : typeof data?.error === 'string' ? data.error : 'http_error', details);
