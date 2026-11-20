@@ -89,7 +89,7 @@ export async function fixture(t) {
     for (const name of ['open', 'xdg-open']) await writeFile(path.join(mockBin, name), `#!${process.execPath}\n${browserScript}`, { mode: 0o755 });
   }
   const releases = {};
-  for (const name of ['oil-ui', 'oil-ui-pro', 'oil-doc', 'oil-doc-pro']) {
+  for (const name of ['oil-ui', 'oil-ui-pro', 'oil-art-landing', 'oil-doc', 'oil-doc-pro']) {
     for (const version of ['0.10.0', '0.11.0']) releases[`${name}:${version}`] = await release(temporary, name, version);
   }
   const state = { catalog: structuredClone(CATALOG), latest: '0.10.0', versionOverrides: {}, omitVersions: [], badChecksum: false, missingChecksum: false, proBadChecksum: false, paidMissingChecksum: false,
@@ -125,14 +125,21 @@ export async function fixture(t) {
       if (req.method === 'GET' && url.pathname === '/api/store/versions') {
         const history = [state.latest, ...(state.latest === '0.11.0' ? ['0.10.0'] : []), '0.9.0', '0.8.0'].map((version) => ({ version, published_at: '2026-10-02T08:00:00Z', notes: english ? `${version}: Improve layout and interactions.` : `${version}：改善布局和交互。` }));
         const skills = {};
-        for (const product of state.catalog) for (const type of ['free', 'paid']) {
-          const name = typeof product[type] === 'string' ? product[type] : product[type]?.skill;
-          if (!name) continue;
-          if (state.omitVersions.includes(name)) continue;
-          const archive = releases[`${name}:${state.latest}`];
-          skills[name] = { latest: state.latest, published_at: '2026-10-02T08:00:00Z', history,
-            ...(type === 'free' ? { download_url: `${base}/releases/${name}-${state.latest}.tar.gz`, sha256: state.missingChecksum ? null : state.badChecksum ? '0'.repeat(64) : archive?.sha256 } : {}),
-            ...state.versionOverrides[name] };
+        for (const product of state.catalog) {
+          for (const type of ['free', 'paid']) {
+            const name = typeof product[type] === 'string' ? product[type] : product[type]?.skill;
+            if (!name) continue;
+            if (state.omitVersions.includes(name)) continue;
+            const archive = releases[`${name}:${state.latest}`];
+            skills[name] = { latest: state.latest, published_at: '2026-10-02T08:00:00Z', history,
+              ...(type === 'free' ? { download_url: `${base}/releases/${name}-${state.latest}.tar.gz`, sha256: state.missingChecksum ? null : state.badChecksum ? '0'.repeat(64) : archive?.sha256 } : {}),
+              ...state.versionOverrides[name] };
+          }
+          for (const entry of product.included || []) {
+            const name = typeof entry === 'string' ? entry : entry?.skill;
+            if (!name || state.omitVersions.includes(name)) continue;
+            skills[name] = { latest: state.latest, published_at: '2026-10-02T08:00:00Z', history, ...state.versionOverrides[name] };
+          }
         }
         return json(res, 200, { skills });
       }
@@ -145,7 +152,7 @@ export async function fixture(t) {
       }
       if (req.method === 'GET' && url.pathname.startsWith('/api/store/download/')) {
         const name = decodeURIComponent(url.pathname.split('/').at(-1));
-        const product = state.catalog.find((p) => p.free?.skill === name || p.paid?.skill === name);
+        const product = state.catalog.find((p) => p.free?.skill === name || p.paid?.skill === name || (p.included || []).some((entry) => (typeof entry === 'string' ? entry : entry?.skill) === name));
         if (!product) return error(res, 404, 'not_found', '没有这个 Skill。');
         const version = url.searchParams.get('version') === 'latest' ? state.latest : url.searchParams.get('version');
         const archive = releases[`${name}:${version}`];
@@ -156,7 +163,8 @@ export async function fixture(t) {
           state.downloadInactiveCount--;
           state.grants.set(token, []);
         }
-        if (!subscriptions(token).some((s) => s.skill === name)) return error(res, 402, 'inactive', '尚未购买。');
+        const entitlementSkill = (product.included || []).some((entry) => (typeof entry === 'string' ? entry : entry?.skill) === name) ? product.paid?.skill : name;
+        if (!subscriptions(token).some((s) => s.skill === entitlementSkill || s.skill === name)) return error(res, 402, 'inactive', '尚未购买。');
         const headers = { 'Content-Type': 'application/gzip', 'Content-Disposition': `attachment; filename="${name}-${version}.tar.gz"`,
           ...(state.paidMissingChecksum ? {} : { 'X-Content-SHA256': state.proBadChecksum ? 'f'.repeat(64) : archive.sha256 }), 'X-Skill-Version': state.badVersion ? '9.9.9' : version };
         if (url.searchParams.get('redirect') === '1' && !state.forceStreamDownload) {

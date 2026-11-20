@@ -13,7 +13,7 @@ npx github:oil-oil/oil-cli status            # 查看版本和账号
 npx github:oil-oil/oil-cli help              # 全部命令
 ```
 
-支持 Claude Code、Codex、DeepSeek Harness、Cursor、WorkBuddy 等 Agent，会自动找到它们的 Skill 目录，也可以用 `--to` 指定。本机只保留一份：优先放在 Claude Code 的目录，其余 Agent 用链接共享（Codex 与 DeepSeek Harness 等默认共用 `~/.agents/skills`，`--to codex` 与 `--to dsh` 分别使用 `~/.codex/skills` 与 `~/.dsh/skills`），更新一次全部生效。状态检查和更新也会扫描已有的用户级 `~/.dsh/skills` 和项目级 `.dsh/skills`。输出语言跟随系统，也可以用 `--lang zh` 或 `--lang en` 指定。支持 macOS、Linux 和 Windows。
+支持 Claude Code、Codex、DeepSeek Harness、Cursor、WorkBuddy 等 Agent，会自动找到它们的 Skill 目录，也可以用 `--to` 指定。本机只保留一份：优先放在 Claude Code 的目录，其余 Agent 用链接共享（Codex 与 DeepSeek Harness 等默认共用 `~/.agents/skills`，`--to codex` 与 `--to dsh` 分别使用 `~/.codex/skills` 与 `~/.dsh/skills`），更新一次全部生效。状态检查和更新也会扫描已有的用户级 `~/.dsh/skills` 和项目级 `.dsh/skills`。付费 Skill 附赠的配套 Skill（例如 Oil UI Pro 附赠的 `oil-art-landing`）会在安装或更新主 Skill 时一起装到同样的位置；配套 Skill 暂时装不上（未登录、授权失效、下载失败或目录被占用）时只跳过它并给出提示，不影响主 Skill。输出语言跟随系统，也可以用 `--lang zh` 或 `--lang en` 指定。支持 macOS、Linux 和 Windows。
 
 ## 许可
 

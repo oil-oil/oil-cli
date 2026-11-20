@@ -6,7 +6,7 @@ import { Output, CliError, ask, canPrompt, confirm } from './io.js';
 import { readAuth, logout as deleteConfig } from './config.js';
 import { Client, catalogNames, findSkill } from './client.js';
 import { openBrowser } from './browser.js';
-import { isSkillName, scan, inspectSkill, isDevelopmentDirectory, installationRoots, uniqueDirectories, canonicalDirectory, resolveDirectory, targetRoot, sameAgentRoots, freeReplacements, compare, updates, conflicts, duplicateCopies } from './skills.js';
+import { isSkillName, scan, skillRoots, linkedRoots, inspectSkill, isDevelopmentDirectory, installationRoots, uniqueDirectories, canonicalDirectory, resolveDirectory, targetRoot, sameAgentRoots, freeReplacements, compare, updates, conflicts, duplicateCopies } from './skills.js';
 import { prepare, replaceAll } from './install.js';
 import { login, loadAuth, requireLogin } from './auth.js';
 import { requirePurchase } from './purchase.js';
@@ -139,12 +139,31 @@ async function apply(ctx, actions, versions, { purchaseOnInactive = false } = {}
   }
 }
 
+// 配套 Skill 是主付费 Skill 的附赠：每个单独成批，失败只跳过它自己并给出提示，不回滚主 Skill，也不拦下其他更新。
+async function applyCompanions(ctx, plans, versions) {
+  const applied = [], links = [], warnings = [];
+  for (const plan of plans) {
+    if (!plan.actions.length) { links.push(...plan.links); continue; }
+    try {
+      warnings.push(...await apply(ctx, plan.actions, versions));
+      applied.push(...plan.actions);
+      links.push(...plan.links);
+    } catch (error) {
+      if (!(error instanceof CliError) || error.error === 'cancelled') throw error;
+      const reason = error.details?.http_status === 402 ? t('companionInactive', { parent: skillLabel(plan.parent) }) : error.message;
+      warnings.push(t('companionSkipped', { name: skillLabel(plan.name), reason }));
+    }
+  }
+  return { applied, links, warnings };
+}
+
 // 清理动作与安装/更新共用 replaceAll 的备份和整批回滚，不单独删除。
 async function addFreeReplacements(ctx, actions, targets = actions) {
   const groups = new Map(), skipped = [];
   for (const target of targets) {
-    const { product, paid } = findSkill(ctx.catalog, target.name);
-    if (!paid || !product.free) continue;
+    const { product, paid, included } = findSkill(ctx.catalog, target.name);
+    // 只有主付费 Skill 能替代开源版；配套 Skill 单独安装时不能删掉开源版。
+    if (!paid || included || !product.free) continue;
     const root = path.dirname(target.path);
     const roots = target.name === 'oil-ui-pro' ? await sameAgentRoots(root) : [root];
     const key = [product.free.skill, ...[...new Set(await Promise.all(roots.map(async (root) => directoryKey(await canonicalDirectory(root)))))].sort()].join('\0');
@@ -178,8 +197,52 @@ async function addFreeReplacements(ctx, actions, targets = actions) {
   return { skipped, roots: [...groups.values()].flatMap((group) => group.roots) };
 }
 
+async function planSkillInstall(ctx, name, roots, allFound, { skipOccupied = false } = {}) {
+  const found = allFound.filter((item) => item.name === name);
+  // 第一个能放下这个 Skill 的目录放真实的一份，其余 Agent 用链接共享，更新一次全部生效。
+  // 同名位置被别的东西占着（例如受保护的链接）时顺延，不让其他 Agent 链到错误的内容上。
+  let primaryIndex = 0;
+  for (let i = 0; i < roots.length; i++) {
+    const directory = path.join(roots[i], name);
+    if (found.some((item) => sameDirectory(item.root, roots[i])) || !await lstatOrNull(directory) || (await inspectSkill(directory, ctx.names))?.name === name) { primaryIndex = i; break; }
+  }
+  const primaryRoot = roots[primaryIndex], linkRoots = roots.filter((root, index) => index !== primaryIndex);
+  const actions = [], skipped = [], links = [];
+  const primaries = found.filter((item) => sameDirectory(item.root, primaryRoot));
+  const candidates = primaries.length ? primaries : [{ name, path: path.join(primaryRoot, name), version: null }];
+  const target = path.resolve((candidates.find((item) => path.basename(item.path) === name) || candidates[0]).path);
+  let primaryPlanned = false;
+  for (const item of candidates) {
+    if (await isDevelopmentDirectory(item.path)) { skipped.push(skippedInstallation(item)); continue; }
+    if (skipOccupied && !primaries.length && await lstatOrNull(item.path)) {
+      skipped.push({ name, path: item.path, reason: 'unrecognized_skill' });
+      continue;
+    }
+    primaryPlanned = true;
+    actions.push({ name, path: primaries.length ? await realInstallation(item) : item.path, previousName: primaries.length ? name : null, previousVersion: item.version });
+  }
+  if (!primaryPlanned && skipOccupied) return { primaryRoot, linkRoots, actions, skipped, links };
+  const targetKey = directoryKey(await canonicalDirectory(target));
+  for (const root of linkRoots) {
+    // 同名文件夹之外，别的文件夹名里装着同一个 Skill 的独立副本也换成链接。
+    const directories = [...new Set([path.join(root, name), ...found.filter((item) => sameDirectory(item.root, root)).map((item) => item.path)])];
+    for (const directory of directories) {
+      const info = await lstatOrNull(directory);
+      if (info && directoryKey(await canonicalDirectory(directory)) === targetKey) { links.push({ name, path: directory, target, existing: true }); continue; }
+      if (info && await isDevelopmentDirectory(directory)) { skipped.push(skippedInstallation({ name, path: directory })); continue; }
+      const current = info ? await inspectSkill(directory, ctx.names) : null;
+      if (skipOccupied && info && current?.name !== name) {
+        skipped.push({ name, path: directory, reason: 'unrecognized_skill' });
+        continue;
+      }
+      actions.push({ name, path: directory, link: target, previousName: current?.name === name ? name : null, previousVersion: current?.version || null });
+    }
+  }
+  return { primaryRoot, linkRoots, actions, skipped, links };
+}
+
 async function install(ctx, name = ctx.options.skill) {
-  const { paid } = findSkill(ctx.catalog, name);
+  const { product, paid, included } = findSkill(ctx.catalog, name);
   let roots = ctx.options.to.length ? [...new Set(ctx.options.to.map((value) => targetRoot(value)))] : await installationRoots();
   if (!roots.length) {
     const defaultAgent = process.env.CODEX_HOME ? 'codex' : 'agents';
@@ -192,39 +255,33 @@ async function install(ctx, name = ctx.options.skill) {
     roots = [targetRoot(answer)];
   }
   roots = await uniqueDirectories(roots);
-  const found = (await scan(ctx.names, roots)).filter((item) => item.name === name);
-  // 第一个能放下这个 Skill 的目录放真实的一份，其余 Agent 用链接共享，更新一次全部生效。
-  // 同名位置被别的东西占着（例如受保护的链接）时顺延，不让其他 Agent 链到错误的内容上。
-  let primaryIndex = 0;
-  for (let i = 0; i < roots.length; i++) {
-    const directory = path.join(roots[i], name);
-    if (found.some((item) => sameDirectory(item.root, roots[i])) || !await lstatOrNull(directory) || (await inspectSkill(directory, ctx.names))?.name === name) { primaryIndex = i; break; }
-  }
-  const primaryRoot = roots[primaryIndex], linkRoots = roots.filter((root, index) => index !== primaryIndex);
-  if (ctx.interactive) ctx.output.write({ event: 'targets', paths: roots, primary: primaryRoot, links: linkRoots },
-    [t('targets'), primaryRoot, ...linkRoots.map((root) => t('targetLink', { path: root }))]);
-  if (!await ctx.confirm(t('confirmInstall', { name: skillLabel(name) }), ctx.options.yes, ctx.interactive, ctx.signal, true)) {
-    ctx.output.write({ cancelled: true }, [t('installCanceled')]); return 0;
-  }
-  const actions = [], skipped = [], links = [];
-  const primaries = found.filter((item) => sameDirectory(item.root, primaryRoot));
-  const candidates = primaries.length ? primaries : [{ name, path: path.join(primaryRoot, name), version: null }];
-  const target = path.resolve((candidates.find((item) => path.basename(item.path) === name) || candidates[0]).path);
-  for (const item of candidates) {
-    if (await isDevelopmentDirectory(item.path)) { skipped.push(skippedInstallation(item)); continue; }
-    actions.push({ name, path: primaries.length ? await realInstallation(item) : item.path, previousName: primaries.length ? name : null, previousVersion: item.version });
-  }
-  const targetKey = directoryKey(await canonicalDirectory(target));
-  for (const root of linkRoots) {
-    // 同名文件夹之外，别的文件夹名里装着同一个 Skill 的独立副本也换成链接。
-    const directories = [...new Set([path.join(root, name), ...found.filter((item) => sameDirectory(item.root, root)).map((item) => item.path)])];
-    for (const directory of directories) {
-      const info = await lstatOrNull(directory);
-      if (info && directoryKey(await canonicalDirectory(directory)) === targetKey) { links.push({ name, path: directory, target, existing: true }); continue; }
-      if (info && await isDevelopmentDirectory(directory)) { skipped.push(skippedInstallation({ name, path: directory })); continue; }
-      const current = info ? await inspectSkill(directory, ctx.names) : null;
-      actions.push({ name, path: directory, link: target, previousName: current?.name === name ? name : null, previousVersion: current?.version || null });
+  const allFound = await scan(ctx.names, roots);
+  const mainPlan = await planSkillInstall(ctx, name, roots, allFound);
+  const { primaryRoot, linkRoots } = mainPlan;
+  const actions = [...mainPlan.actions], skipped = [...mainPlan.skipped], links = [...mainPlan.links];
+  const companionNames = !included && paid && product.paid?.skill === name && mainPlan.actions.length ? (product.included || []).map((entry) => entry.skill) : [];
+  let versions = null;
+  const companionPlans = [];
+  if (companionNames.length) {
+    versions = await ctx.client.versions(ctx.catalog, [name]);
+    for (const companion of companionNames) {
+      if (!Object.hasOwn(versions, companion)) continue;
+      const plan = await planSkillInstall(ctx, companion, roots, allFound, { skipOccupied: true });
+      skipped.push(...plan.skipped);
+      companionPlans.push({ name: companion, parent: name, actions: plan.actions, links: plan.links });
     }
+  }
+  const plannedCompanions = companionPlans.filter((plan) => plan.actions.length).map((plan) => plan.name);
+  const companionLabel = plannedCompanions.map(skillLabel).join(ctx.client.lang === 'zh' ? '、' : ', ');
+  if (ctx.interactive) ctx.output.write(
+    { event: 'targets', paths: roots, primary: primaryRoot, links: linkRoots, ...(plannedCompanions.length ? { included: plannedCompanions } : {}) },
+    [t('targets'), primaryRoot, ...linkRoots.map((root) => t('targetLink', { path: root })), ...(plannedCompanions.length ? [t('companionTargets', { names: companionLabel })] : [])],
+  );
+  const confirmMessage = plannedCompanions.length
+    ? t('confirmInstallWithCompanions', { name: skillLabel(name), companions: companionLabel })
+    : t('confirmInstall', { name: skillLabel(name) });
+  if (!await ctx.confirm(confirmMessage, ctx.options.yes, ctx.interactive, ctx.signal, true)) {
+    ctx.output.write({ cancelled: true }, [t('installCanceled')]); return 0;
   }
   if (!actions.length) {
     ctx.output.write({ installations: [], links, removed: [], skipped, warnings: [] }, [...linkedLines(links), ...skippedLines(skipped)]); return 0;
@@ -233,13 +290,17 @@ async function install(ctx, name = ctx.options.skill) {
   if (paid && downloads) { await requireLogin(ctx); await requirePurchase(ctx, name); }
   const cleanup = await addFreeReplacements(ctx, actions);
   skipped.push(...cleanup.skipped.filter((item) => !skipped.some((existing) => sameDirectory(existing.path, item.path))));
-  const versions = await ctx.client.versions(ctx.catalog, [name]);
+  versions ||= await ctx.client.versions(ctx.catalog, [name]);
   const warnings = await apply(ctx, actions, versions, { purchaseOnInactive: true });
+  const companions = await applyCompanions(ctx, companionPlans, versions);
+  links.push(...companions.links);
+  warnings.push(...companions.warnings);
+  const done = [...actions, ...companions.applied];
   const installed = await scan(ctx.names, [...roots, ...cleanup.roots]);
   warnings.push(...await conflicts(installed, ctx.catalog));
-  const installations = actions.filter((action) => !action.remove && !action.link).map((action) => ({ name, path: action.path,
-    previous: action.previousName === name ? action.previousVersion : null, version: versions[name].latest }));
-  links.push(...actions.filter((action) => action.link).map((action) => ({ name, path: action.path, target: action.link, existing: false, replaced_copy: action.previousName === name })));
+  const installations = done.filter((action) => !action.remove && !action.link).map((action) => ({ name: action.name, path: action.path,
+    previous: action.previousName === action.name ? action.previousVersion : null, version: versions[action.name].latest }));
+  links.push(...done.filter((action) => action.link).map((action) => ({ name: action.name, path: action.path, target: action.link, existing: false, replaced_copy: action.previousName === action.name })));
   const removed = removedActions(actions).map((action) => action.path);
   let proHint = null;
   if (name === 'oil-ui' && actions.some((action) => !action.previousName) && !installed.some((item) => item.name === 'oil-ui-pro')) {
@@ -281,20 +342,71 @@ async function update(ctx) {
   const versions = await ctx.client.versions(ctx.catalog, eligible.map((item) => item.name));
   const pending = eligible.filter((item) => !item.version || compare(item.version, versions[item.name].latest) < 0);
   const actions = await Promise.all(pending.map(async (item) => ({ name: item.name, path: await realInstallation(item), previousName: item.name, previousVersion: item.version })));
+  // 已装主付费 Skill 时，在同作用域内顺带补齐套件里新发布但尚未安装的配套 Skill（含 --path 指定的单目录自更新）。
+  const companionPlans = [], plannedScopes = new Set();
+  for (const item of eligible) {
+    const { product, included } = findSkill(ctx.catalog, item.name);
+    if (included || product.paid?.skill !== item.name || !product.included?.length) continue;
+    for (const entry of product.included) {
+      if (!Object.hasOwn(versions, entry.skill)) continue;
+      const parentRoots = ctx.options.path ? [item.root, ...await linkedRoots(item)] : await skillRoots(item.name, item.root);
+      if (!parentRoots.length) continue;
+      // 用户级目录里的多份主 Skill 共享同一组目录，按整组去重，避免同一配套 Skill 被规划两次、互相链接。
+      const scopeKey = [entry.skill, ...(await Promise.all(parentRoots.map(async (root) => directoryKey(await canonicalDirectory(root))))).sort()].join('\0');
+      if (plannedScopes.has(scopeKey)) continue;
+      plannedScopes.add(scopeKey);
+      const existingInScope = ctx.options.path
+        ? await scan([entry.skill], parentRoots)
+        : all.filter((foundItem) => foundItem.name === entry.skill && parentRoots.some((root) => sameDirectory(foundItem.root, root)));
+      if (existingInScope.length) continue;
+      const plan = await planSkillInstall(ctx, entry.skill, parentRoots, existingInScope, { skipOccupied: true });
+      skipped.push(...plan.skipped);
+      companionPlans.push({ name: entry.skill, parent: item.name, actions: plan.actions, links: plan.links });
+    }
+  }
   const cleanup = await addFreeReplacements(ctx, actions, eligible.filter((item) => item.name === 'oil-ui-pro'));
   skipped.push(...cleanup.skipped.filter((item) => !skipped.some((existing) => sameDirectory(existing.path, item.path))));
-  const replacements = actions.filter((action) => !action.remove);
+  const replacements = actions.filter((action) => !action.remove && !action.link);
+  const warnings = [];
   if (replacements.some((item) => findSkill(ctx.catalog, item.name).paid)) await requireLogin(ctx);
-  if (replacements.length && !await ctx.confirm(t('confirmUpdate', { count: replacements.length }), ctx.options.yes, ctx.interactive, ctx.signal, true)) {
+  else if (companionPlans.some((plan) => plan.actions.length)) {
+    // 只为补装配套 Skill 不弹登录；没有登录就提示后跳过。
+    await loadAuth(ctx);
+    if (!ctx.token) {
+      warnings.push(...companionPlans.filter((plan) => plan.actions.length).map((plan) => t('companionLogin', { name: skillLabel(plan.name), next: command('login') })));
+      companionPlans.length = 0;
+    }
+  }
+  const pendingCount = replacements.length + companionPlans.reduce((count, plan) => count + plan.actions.filter((action) => !action.link).length, 0);
+  if (pendingCount && !await ctx.confirm(t('confirmUpdate', { count: pendingCount }), ctx.options.yes, ctx.interactive, ctx.signal, true)) {
     ctx.output.write({ cancelled: true, removed: [], skipped, ...counts, status: 'cancelled' }, [t('updateCanceled'), ...skippedLines(skipped)]); return 0;
   }
-  const warnings = await apply(ctx, actions, versions);
+  warnings.push(...await apply(ctx, actions, versions));
+  const companions = await applyCompanions(ctx, companionPlans, versions);
+  warnings.push(...companions.warnings);
+  const links = [...companions.links];
+  const done = [...actions, ...companions.applied];
   const after = await scan(ctx.names, [...all.map((item) => item.root), ...cleanup.roots]);
   warnings.push(...await conflicts(after, ctx.catalog));
   if (!ctx.options.path) warnings.push(...duplicateLines(duplicateCopies(after.filter((item) => !ctx.options.skill || item.name === ctx.options.skill))));
-  const installations = actions.filter((action) => !action.remove).map((item) => ({ name: item.name, path: item.path, previous: item.previousVersion, version: versions[item.name].latest }));
+  const installationActions = done.filter((action) => !action.remove && !action.link);
+  const installations = installationActions.map((item) => ({ name: item.name, path: item.path, previous: item.previousVersion, version: versions[item.name].latest }));
+  links.push(...done.filter((action) => action.link).map((action) => ({ name: action.name, path: action.path, target: action.link, existing: false, replaced_copy: action.previousName === action.name })));
   const removed = removedActions(actions).map((action) => action.path);
-  ctx.output.write({ installations, removed, skipped, warnings, ...counts, updated_count: installations.length, status: installations.length ? 'updated' : 'up_to_date' }, [...(installations.length ? installations.map((item) => t('updated', { name: skillLabel(item.name), previous: item.previous || t('unknownVersion'), version: item.version, path: item.path })) : [t('upToDate')]), ...removedLines(actions), ...skippedLines(skipped), ...warnings]);
+  ctx.output.write(
+    { installations, ...(links.length ? { links } : {}), removed, skipped, warnings, ...counts, updated_count: installations.length, status: installations.length ? 'updated' : 'up_to_date' },
+    [
+      ...(installationActions.length
+        ? installationActions.map((item) => item.previousName
+          ? t('updated', { name: skillLabel(item.name), previous: item.previousVersion || t('unknownVersion'), version: versions[item.name].latest, path: item.path })
+          : t('installed', { name: skillLabel(item.name), version: versions[item.name].latest, path: item.path }))
+        : [t('upToDate')]),
+      ...linkedLines(links),
+      ...removedLines(actions),
+      ...skippedLines(skipped),
+      ...warnings,
+    ],
+  );
   return 0;
 }
 

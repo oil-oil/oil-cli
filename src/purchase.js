@@ -16,10 +16,11 @@ function purchaseDetails(product, name, plan, checkout) {
     purchase_description: planLabel(plan), price_label: priceLabel(price) };
 }
 
-export async function requirePurchase(ctx, name, { plan, force = false } = {}) {
+export async function requirePurchase(ctx, requestedName, { plan, force = false } = {}) {
+  const { product, entitlementSkill } = findSkill(ctx.catalog, requestedName);
+  const name = entitlementSkill;
   const unlocked = ctx.unlockedSkills ??= new Set();
   if (!force && unlocked.has(name)) return;
-  const { product } = findSkill(ctx.catalog, name);
   const selectedPlan = plan || product.offer?.[0] || Object.keys(product.prices)[0] || 'lifetime';
   let details = purchaseDetails(product, name, selectedPlan);
   let checkout = await readPendingCheckout(name, ctx.token, ctx.client.base);

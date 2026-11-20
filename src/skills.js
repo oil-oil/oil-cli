@@ -175,9 +175,13 @@ export function resolveDirectory(value, env = process.env, platform = process.pl
   return paths.resolve(cwd, value);
 }
 
+export function userDiscoveryRoots(env = process.env, platform = process.platform, cwd = process.cwd()) {
+  return [...new Set(agents.map((agent) => targetRoot(agent, env, platform, cwd)))];
+}
+
 export function discoveryRoots(env = process.env, platform = process.platform, cwd = process.cwd()) {
   return [...new Set([
-    ...agents.map((agent) => targetRoot(agent, env, platform, cwd)),
+    ...userDiscoveryRoots(env, platform, cwd),
     ...projectAgents.map((agent) => pathsFor(platform).resolve(cwd, `.${agent}`, 'skills')),
   ])];
 }
@@ -277,6 +281,49 @@ export async function scan(names, roots = discoveryRoots()) {
     }
   }
   return found;
+}
+
+// --path 只处理这一份安装：其他用户级目录里指向同一份安装的同名链接，所在目录也算同一作用域。
+export async function linkedRoots(item, env = process.env, platform = process.platform, cwd = process.cwd()) {
+  const target = directoryKey(await canonicalDirectory(item.real_path || item.path));
+  const own = directoryKey(await canonicalDirectory(item.root));
+  const roots = [];
+  for (const root of userDiscoveryRoots(env, platform, cwd)) {
+    if (directoryKey(await canonicalDirectory(root)) === own) continue;
+    const candidate = path.join(root, item.name);
+    try { await lstat(candidate); }
+    catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue;
+      throw new CliError(t('scanRead', { path: root }), 1, 'skill_read');
+    }
+    if (directoryKey(await canonicalDirectory(candidate)) === target) roots.push(root);
+  }
+  return roots;
+}
+
+export async function skillRoots(name, scopeRoot = null) {
+  const userRoots = userDiscoveryRoots();
+  let roots = userRoots;
+  if (scopeRoot) {
+    const scopeKey = directoryKey(await canonicalDirectory(scopeRoot));
+    const userKeys = await Promise.all(userRoots.map(async (root) => directoryKey(await canonicalDirectory(root))));
+    if (!userKeys.includes(scopeKey)) return [scopeRoot];
+  }
+  const matched = [];
+  for (const root of [...new Set(roots)]) {
+    let entries;
+    try { entries = await readdir(root, { withFileTypes: true }); }
+    catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) continue;
+      throw new CliError(t('scanRead', { path: root }), 1, 'skill_read');
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const skill = await inspectSkill(path.join(root, entry.name), [name]);
+      if (skill && !skill.development) { matched.push(root); break; }
+    }
+  }
+  return uniqueDirectories(scopeRoot ? [scopeRoot, ...matched] : matched);
 }
 
 // scan 已按真实路径去重，同名的多条记录就是多份互不相干的副本。
